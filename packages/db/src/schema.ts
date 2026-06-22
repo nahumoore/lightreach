@@ -191,6 +191,8 @@ export const messages = sqliteTable("messages", {
   status: text("status").notNull().default("queued"),
   scheduledAt: integer("scheduled_at", { mode: "timestamp" }),
   sentAt: integer("sent_at", { mode: "timestamp" }),
+  /** RFC822 Message-ID of the sent email — used to match inbound replies/bounces */
+  messageId: text("message_id"),
   /** Spintax already resolved + variables substituted */
   renderedSubject: text("rendered_subject"),
   renderedBody: text("rendered_body"),

@@ -17,6 +17,20 @@ import { eq, and, lte, gte, isNotNull, sql } from 'drizzle-orm'
 const TICK_MS = 60_000
 const BATCH_SIZE = 10
 
+function normalizeMessageId(id: string | null | undefined): string | null {
+  if (!id) return null
+  return id.replace(/^<|>$/g, '').trim() || null
+}
+
+function isHardBounce(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err)
+  const code = (err as { responseCode?: number }).responseCode
+  if (code !== undefined && code >= 550 && code <= 554) return true
+  if (/\b55[0-4]\b/.test(msg)) return true
+  if (/\b(user.*unknown|mailbox.*unavailable|no.*such.*user|address.*rejected|does not exist|invalid.*mailbox)\b/i.test(msg)) return true
+  return false
+}
+
 let schedulerHandle: ReturnType<typeof setInterval> | null = null
 
 export function startScheduler(): void {
@@ -193,6 +207,15 @@ async function tick(): Promise<void> {
       continue
     }
 
+    // Skip if lead already replied or bounced — stop sequence
+    if (lead.status === 'bounced' || lead.status === 'replied') {
+      await db
+        .update(messages)
+        .set({ status: 'skipped' })
+        .where(eq(messages.id, msg.msgId))
+      continue
+    }
+
     // Skip if campaign has no sequence
     if (!msg.sequenceId) {
       await db
@@ -248,7 +271,7 @@ async function tick(): Promise<void> {
 
     // Send email
     try {
-      await sendMail(
+      const { messageId: sentMessageId } = await sendMail(
         {
           smtpHost: chosenConn.smtpHost,
           smtpPort: chosenConn.smtpPort,
@@ -273,6 +296,7 @@ async function tick(): Promise<void> {
           connectionId: pickResult.connectionId,
           renderedSubject,
           renderedBody,
+          messageId: normalizeMessageId(sentMessageId),
         })
         .where(eq(messages.id, msg.msgId))
 
@@ -288,10 +312,24 @@ async function tick(): Promise<void> {
         .set({ status: 'failed', error: errMsg })
         .where(eq(messages.id, msg.msgId))
 
-      await db
-        .update(connections)
-        .set({ status: 'error', lastError: errMsg })
-        .where(eq(connections.id, pickResult.connectionId))
+      if (isHardBounce(err)) {
+        await db
+          .update(leads)
+          .set({ status: 'bounced' })
+          .where(eq(leads.id, msg.leadId))
+        await db
+          .update(messages)
+          .set({ status: 'skipped' })
+          .where(and(eq(messages.leadId, msg.leadId), eq(messages.status, 'queued')))
+        console.log(
+          `[Lightreach] Hard bounce for lead ${msg.leadId} (message ${msg.msgId}) — lead marked bounced, future messages skipped`,
+        )
+      } else {
+        await db
+          .update(connections)
+          .set({ status: 'error', lastError: errMsg })
+          .where(eq(connections.id, pickResult.connectionId))
+      }
     }
   }
 }

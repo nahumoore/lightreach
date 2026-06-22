@@ -1,8 +1,9 @@
 import { db } from '@workspace/db'
-import { connections, inboundEmails, appSettings } from '@workspace/db/schema'
+import { connections, inboundEmails, appSettings, messages, leads } from '@workspace/db/schema'
 import { decrypt } from '@workspace/core/crypto'
 import { resolveImapConfig, fetchRecent } from '@workspace/core/email/imap'
-import { eq, max } from 'drizzle-orm'
+import type { ParsedEmail } from '@workspace/core/email/imap'
+import { eq, and, max, inArray } from 'drizzle-orm'
 
 const TICK_MS = 120_000
 
@@ -55,6 +56,76 @@ function isWarmupMatch(subject: string, bodyText: string | null, keywords: strin
   return keywords.some((kw) => haystack.includes(kw))
 }
 
+function normalizeMessageId(id: string): string | null {
+  const normalized = id.replace(/^<|>$/g, '').trim()
+  return normalized || null
+}
+
+function isBounceEmail(email: ParsedEmail): boolean {
+  const from = email.fromEmail.toLowerCase()
+  const name = email.fromName.toLowerCase()
+  const subject = email.subject.toLowerCase()
+
+  if (/^(mailer-daemon|postmaster|mail-daemon)@/i.test(from)) return true
+  if (/\b(mailer.daemon|mail delivery subsystem|delivery status notification|postmaster)\b/i.test(name)) return true
+  if (/\b(undeliverable|delivery (status notification|failure)|mail delivery failed|returned mail|non.delivery report|failure notice|could not be delivered)\b/i.test(subject)) return true
+
+  return false
+}
+
+async function classifyAndActOnInbound(email: ParsedEmail): Promise<void> {
+  const isBounce = isBounceEmail(email)
+
+  // Collect all referenced message IDs from inReplyTo and references headers
+  const refs = new Set<string>()
+  if (email.inReplyTo) {
+    const n = normalizeMessageId(email.inReplyTo)
+    if (n) refs.add(n)
+  }
+  if (email.references) {
+    for (const r of email.references.split(/\s+/)) {
+      const n = normalizeMessageId(r)
+      if (n) refs.add(n)
+    }
+  }
+
+  if (refs.size === 0) return
+
+  // Find sent messages matching any referenced ID
+  const refArray = [...refs]
+  const matched = await db
+    .select({ leadId: messages.leadId })
+    .from(messages)
+    .where(inArray(messages.messageId, refArray))
+    .limit(1)
+
+  if (matched.length === 0) return
+
+  const leadId = matched[0]!.leadId
+
+  // Don't downgrade an already-bounced lead to replied
+  const [currentLead] = await db
+    .select({ status: leads.status })
+    .from(leads)
+    .where(eq(leads.id, leadId))
+
+  if (!currentLead || currentLead.status === 'bounced') return
+
+  const newStatus = isBounce ? 'bounced' : 'replied'
+
+  await db.update(leads).set({ status: newStatus }).where(eq(leads.id, leadId))
+
+  // Stop all future queued messages for this lead
+  await db
+    .update(messages)
+    .set({ status: 'skipped' })
+    .where(and(eq(messages.leadId, leadId), eq(messages.status, 'queued')))
+
+  console.log(
+    `[Lightreach] Inbox: lead ${leadId} marked as ${newStatus} (${isBounce ? 'bounce' : 'reply'} detected)`,
+  )
+}
+
 export async function pollAllInboxes(): Promise<void> {
   const allConnections = await db
     .select()
@@ -83,7 +154,7 @@ export async function pollAllInboxes(): Promise<void> {
       for (const email of emails) {
         const warmup = isWarmupMatch(email.subject, email.bodyText, keywords)
 
-        await db
+        const inserted = await db
           .insert(inboundEmails)
           .values({
             connectionId: conn.id,
@@ -101,6 +172,11 @@ export async function pollAllInboxes(): Promise<void> {
             receivedAt: email.receivedAt,
           })
           .onConflictDoNothing()
+
+        // Only classify newly inserted emails (skip duplicates)
+        if (inserted.changes > 0) {
+          await classifyAndActOnInbound(email)
+        }
       }
 
       if (emails.length > 0) {

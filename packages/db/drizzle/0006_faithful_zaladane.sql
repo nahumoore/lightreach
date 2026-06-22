@@ -1,0 +1,1 @@
+ALTER TABLE `messages` ADD `message_id` text;
