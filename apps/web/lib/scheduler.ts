@@ -13,6 +13,7 @@ import { pickNext, isWithinSendWindow } from '@workspace/core/rotation'
 import { expandSpintax } from '@workspace/core/spintax'
 import { renderVariables } from '@workspace/core/variables'
 import { eq, and, lte, gte, isNotNull, sql } from 'drizzle-orm'
+import { randomUUID } from 'crypto'
 
 const TICK_MS = 60_000
 const BATCH_SIZE = 10
@@ -131,6 +132,11 @@ async function tick(): Promise<void> {
   let lastUsedConnectionId: number | null = null
 
   for (const msg of due) {
+    // campaignId is guaranteed non-null by the innerJoin above, but the column
+    // is nullable in the schema (manual replies have no campaign). Guard here
+    // to narrow the TypeScript type for the rest of the loop.
+    if (msg.campaignId == null) continue
+
     // Skip if outside send window
     if (
       !isWithinSendWindow(
@@ -269,9 +275,13 @@ async function tick(): Promise<void> {
       continue
     }
 
+    // Generate a deterministic messageId before sending so it is always stored,
+    // regardless of whether the SMTP server echoes it back.
+    const outboundMessageId = `<${randomUUID()}@lightreach.local>`
+
     // Send email
     try {
-      const { messageId: sentMessageId } = await sendMail(
+      await sendMail(
         {
           smtpHost: chosenConn.smtpHost,
           smtpPort: chosenConn.smtpPort,
@@ -285,6 +295,7 @@ async function tick(): Promise<void> {
           to: lead.email,
           subject: renderedSubject,
           html: renderedBody,
+          messageId: outboundMessageId,
         },
       )
 
@@ -296,7 +307,7 @@ async function tick(): Promise<void> {
           connectionId: pickResult.connectionId,
           renderedSubject,
           renderedBody,
-          messageId: normalizeMessageId(sentMessageId),
+          messageId: normalizeMessageId(outboundMessageId),
         })
         .where(eq(messages.id, msg.msgId))
 

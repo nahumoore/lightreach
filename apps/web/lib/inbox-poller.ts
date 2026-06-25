@@ -38,11 +38,11 @@ export function stopInboxPoller(): void {
   }
 }
 
-async function getWarmupKeywords(): Promise<string[]> {
+async function getFilteredKeywords(): Promise<string[]> {
   const [row] = await db
     .select({ value: appSettings.value })
     .from(appSettings)
-    .where(eq(appSettings.key, 'warmup_keywords'))
+    .where(eq(appSettings.key, 'filter_keywords'))
   if (!row?.value?.trim()) return []
   return row.value
     .split(/[\n,]+/)
@@ -50,13 +50,13 @@ async function getWarmupKeywords(): Promise<string[]> {
     .filter(Boolean)
 }
 
-function isWarmupMatch(subject: string, bodyText: string | null, keywords: string[]): boolean {
+function isFilteredMatch(subject: string, bodyText: string | null, keywords: string[]): boolean {
   if (keywords.length === 0) return false
   const haystack = `${subject} ${bodyText ?? ''}`.toLowerCase()
   return keywords.some((kw) => haystack.includes(kw))
 }
 
-function normalizeMessageId(id: string): string | null {
+export function normalizeMessageId(id: string): string | null {
   const normalized = id.replace(/^<|>$/g, '').trim()
   return normalized || null
 }
@@ -134,7 +134,7 @@ export async function pollAllInboxes(): Promise<void> {
 
   if (allConnections.length === 0) return
 
-  const keywords = await getWarmupKeywords()
+  const keywords = await getFilteredKeywords()
 
   for (const conn of allConnections) {
     try {
@@ -152,7 +152,7 @@ export async function pollAllInboxes(): Promise<void> {
       const emails = await fetchRecent(imapConfig, { sinceUid, limit: 100 })
 
       for (const email of emails) {
-        const warmup = isWarmupMatch(email.subject, email.bodyText, keywords)
+        const filtered = isFilteredMatch(email.subject, email.bodyText, keywords)
 
         const inserted = await db
           .insert(inboundEmails)
@@ -168,7 +168,7 @@ export async function pollAllInboxes(): Promise<void> {
             subject: email.subject,
             bodyText: email.bodyText,
             bodyHtml: email.bodyHtml,
-            isWarmup: warmup,
+            isFiltered: filtered,
             receivedAt: email.receivedAt,
           })
           .onConflictDoNothing()

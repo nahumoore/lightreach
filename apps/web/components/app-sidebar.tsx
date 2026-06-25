@@ -27,45 +27,20 @@ import {
   IconMailbox,
 } from "@tabler/icons-react"
 
-const navItems = [
-  {
-    label: "Dashboard",
-    href: "/dashboard",
-    icon: IconLayoutDashboard,
-  },
+const overviewItems = [
+  { label: "Dashboard", href: "/dashboard", icon: IconLayoutDashboard },
 ]
 
-const featureItems = [
-  {
-    label: "Connections",
-    href: "/connections",
-    icon: IconMail,
-  },
-  {
-    label: "Leads",
-    href: "/leads",
-    icon: IconUsers,
-  },
-  {
-    label: "Sequences",
-    href: "/sequences",
-    icon: IconTemplate,
-  },
-  {
-    label: "Campaigns",
-    href: "/campaigns",
-    icon: IconSend,
-  },
-  {
-    label: "Emails",
-    href: "/emails",
-    icon: IconInbox,
-  },
-  {
-    label: "Inbox",
-    href: "/inbox",
-    icon: IconMailbox,
-  },
+const setupItems = [
+  { label: "Connections", href: "/connections", icon: IconMail },
+  { label: "Leads", href: "/leads", icon: IconUsers },
+  { label: "Sequences", href: "/sequences", icon: IconTemplate },
+]
+
+const outreachItems = [
+  { label: "Campaigns", href: "/campaigns", icon: IconSend },
+  { label: "Emails", href: "/emails", icon: IconInbox },
+  { label: "Inbox", href: "/inbox", icon: IconMailbox },
 ]
 
 export function AppSidebar() {
@@ -79,7 +54,7 @@ export function AppSidebar() {
   return (
     <Sidebar>
       {/* Logo / brand */}
-      <SidebarHeader className="border-b px-4 py-4">
+      <SidebarHeader className="h-14 justify-center border-b px-4">
         <Link href="/dashboard" className="flex items-center gap-2.5">
           <div className="bg-primary flex size-7 items-center justify-center rounded-md">
             <IconBolt className="size-4 text-white" />
@@ -89,16 +64,13 @@ export function AppSidebar() {
       </SidebarHeader>
 
       <SidebarContent>
-        {/* Main nav */}
+        {/* Overview */}
         <SidebarGroup>
           <SidebarGroupContent>
             <SidebarMenu>
-              {navItems.map((item) => (
+              {overviewItems.map((item) => (
                 <SidebarMenuItem key={item.href}>
-                  <SidebarMenuButton
-                    asChild
-                    isActive={isActive(item.href)}
-                  >
+                  <SidebarMenuButton asChild isActive={isActive(item.href)}>
                     <Link href={item.href}>
                       <item.icon className="size-4" />
                       {item.label}
@@ -112,17 +84,35 @@ export function AppSidebar() {
 
         <SidebarSeparator />
 
-        {/* Features */}
+        {/* Setup */}
+        <SidebarGroup>
+          <SidebarGroupLabel>Setup</SidebarGroupLabel>
+          <SidebarGroupContent>
+            <SidebarMenu>
+              {setupItems.map((item) => (
+                <SidebarMenuItem key={item.href}>
+                  <SidebarMenuButton asChild isActive={isActive(item.href)}>
+                    <Link href={item.href}>
+                      <item.icon className="size-4" />
+                      {item.label}
+                    </Link>
+                  </SidebarMenuButton>
+                </SidebarMenuItem>
+              ))}
+            </SidebarMenu>
+          </SidebarGroupContent>
+        </SidebarGroup>
+
+        <SidebarSeparator />
+
+        {/* Outreach */}
         <SidebarGroup>
           <SidebarGroupLabel>Outreach</SidebarGroupLabel>
           <SidebarGroupContent>
             <SidebarMenu>
-              {featureItems.map((item) => (
+              {outreachItems.map((item) => (
                 <SidebarMenuItem key={item.href}>
-                  <SidebarMenuButton
-                    asChild
-                    isActive={isActive(item.href)}
-                  >
+                  <SidebarMenuButton asChild isActive={isActive(item.href)}>
                     <Link href={item.href}>
                       <item.icon className="size-4" />
                       {item.label}

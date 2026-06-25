@@ -49,7 +49,7 @@ const MESSAGE_FIELDS = {
 function toRow(
   r: {
     id: number
-    campaignId: number
+    campaignId: number | null
     status: string
     stepPosition: number
     scheduledAt: Date | null
@@ -74,7 +74,7 @@ function toRow(
   let fromEmail = r.fromEmail
   let fromName = r.fromName
   if (!fromEmail) {
-    const fallback = campaignFromMap.get(r.campaignId)
+    const fallback = r.campaignId != null ? campaignFromMap.get(r.campaignId) : undefined
     if (fallback) {
       fromEmail = fallback.fromEmail
       fromName = fallback.fromName

@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useTransition, useMemo } from 'react'
+import { useState, useTransition, useMemo, useEffect, useRef } from 'react'
 import { Badge } from '@workspace/ui/components/badge'
 import { Button } from '@workspace/ui/components/button'
 import { Card, CardContent } from '@workspace/ui/components/card'
@@ -52,10 +52,14 @@ import {
   IconCalendar,
   IconClock,
   IconBan,
+  IconArrowDown,
+  IconArrowUp,
+  IconSelector,
 } from '@tabler/icons-react'
 import { toast } from 'sonner'
 import type { InboundRow } from './page'
-import { markRead, markUnread, replyToEmail, saveWarmupKeywords, triggerFetch, categorizeEmail } from './actions'
+import { markRead, markUnread, replyToEmail, saveFilteredKeywords, triggerFetch, categorizeEmail, getOutboundMessages } from './actions'
+import type { OutboundMessage } from './actions'
 
 // ---------------------------------------------------------------------------
 // Category config
@@ -112,16 +116,18 @@ function getCategoryMeta(value: string) {
 
 function formatDate(iso: string | null): string {
   if (!iso) return '—'
-  const d = new Date(iso)
-  const now = new Date()
-  const diffDays = Math.floor((now.getTime() - d.getTime()) / 86_400_000)
-  if (diffDays === 0) {
-    return d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })
-  }
-  if (diffDays < 7) {
-    return d.toLocaleString(undefined, { weekday: 'short', hour: '2-digit', minute: '2-digit' })
-  }
-  return d.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+  const diff = Date.now() - new Date(iso).getTime()
+  const mins = Math.floor(diff / 60_000)
+  if (mins < 1) return 'just now'
+  if (mins < 60) return mins === 1 ? '1 minute ago' : `${mins} minutes ago`
+  const hrs = Math.floor(mins / 60)
+  if (hrs < 24) return hrs === 1 ? '1 hour ago' : `${hrs} hours ago`
+  const days = Math.floor(hrs / 24)
+  if (days < 30) return days === 1 ? '1 day ago' : `${days} days ago`
+  const months = Math.floor(days / 30)
+  if (months < 12) return months === 1 ? '1 month ago' : `${months} months ago`
+  const years = Math.floor(months / 12)
+  return years === 1 ? '1 year ago' : `${years} years ago`
 }
 
 function filterRows(rows: InboundRow[], query: string): InboundRow[] {
@@ -133,6 +139,90 @@ function filterRows(rows: InboundRow[], query: string): InboundRow[] {
       r.fromName.toLowerCase().includes(q) ||
       r.subject.toLowerCase().includes(q) ||
       (r.bodyText ?? '').toLowerCase().includes(q),
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Sorting
+// ---------------------------------------------------------------------------
+
+type SortKey = 'from' | 'subject' | 'category' | 'mailbox' | 'date'
+type SortDir = 'asc' | 'desc'
+
+function sortRows(rows: InboundRow[], key: SortKey, dir: SortDir, showLastInteraction: boolean): InboundRow[] {
+  return [...rows].sort((a, b) => {
+    let av: string
+    let bv: string
+    switch (key) {
+      case 'from':
+        av = (a.fromName || a.fromEmail).toLowerCase()
+        bv = (b.fromName || b.fromEmail).toLowerCase()
+        break
+      case 'subject':
+        av = (a.subject ?? '').toLowerCase()
+        bv = (b.subject ?? '').toLowerCase()
+        break
+      case 'category':
+        av = a.category ?? ''
+        bv = b.category ?? ''
+        break
+      case 'mailbox':
+        av = (a.connectionLabel ?? '').toLowerCase()
+        bv = (b.connectionLabel ?? '').toLowerCase()
+        break
+      case 'date':
+        if (showLastInteraction) {
+          const aMax = a.repliedAt && a.receivedAt
+            ? (a.repliedAt > a.receivedAt ? a.repliedAt : a.receivedAt)
+            : (a.repliedAt ?? a.receivedAt ?? '')
+          const bMax = b.repliedAt && b.receivedAt
+            ? (b.repliedAt > b.receivedAt ? b.repliedAt : b.receivedAt)
+            : (b.repliedAt ?? b.receivedAt ?? '')
+          av = aMax; bv = bMax
+        } else {
+          av = a.receivedAt ?? ''
+          bv = b.receivedAt ?? ''
+        }
+        break
+    }
+    return dir === 'asc' ? av.localeCompare(bv) : bv.localeCompare(av)
+  })
+}
+
+function SortableHead({
+  label,
+  sortKey,
+  current,
+  dir,
+  onSort,
+  className,
+}: {
+  label: string
+  sortKey: SortKey
+  current: SortKey
+  dir: SortDir
+  onSort: (key: SortKey) => void
+  className?: string
+}) {
+  const active = current === sortKey
+  return (
+    <TableHead
+      className={`cursor-pointer select-none ${className ?? ''}`}
+      onClick={() => onSort(sortKey)}
+    >
+      <div className="flex items-center gap-1">
+        {label}
+        {active ? (
+          dir === 'asc' ? (
+            <IconArrowUp className="size-3 shrink-0 opacity-60" />
+          ) : (
+            <IconArrowDown className="size-3 shrink-0 opacity-60" />
+          )
+        ) : (
+          <IconSelector className="size-3 shrink-0 opacity-30" />
+        )}
+      </div>
+    </TableHead>
   )
 }
 
@@ -153,7 +243,7 @@ function CategoryPicker({
     <DropdownMenu>
       <DropdownMenuTrigger asChild onClick={(e) => e.stopPropagation()}>
         <button
-          className={`inline-flex items-center gap-1 rounded border px-1.5 py-0.5 text-xs font-medium transition-opacity hover:opacity-80 ${
+          className={`inline-flex items-center gap-1 whitespace-nowrap rounded border px-1.5 py-0.5 text-xs font-medium transition-opacity hover:opacity-80 ${
             meta.badge || 'border-border text-muted-foreground'
           }`}
         >
@@ -162,7 +252,7 @@ function CategoryPicker({
           <IconChevronDown className="size-2.5 opacity-60" />
         </button>
       </DropdownMenuTrigger>
-      <DropdownMenuContent align="start" onClick={(e) => e.stopPropagation()}>
+      <DropdownMenuContent align="start" className="w-48" onClick={(e) => e.stopPropagation()}>
         {CATEGORIES.map((cat) => (
           <DropdownMenuItem
             key={cat.value}
@@ -193,8 +283,8 @@ function EmptyState({ label }: { label: string }) {
       </div>
       <p className="text-foreground text-sm font-medium">No {label} emails</p>
       <p className="text-muted-foreground mt-1 text-sm">
-        {label === 'warmup'
-          ? 'Emails matching your warmup keywords will appear here.'
+        {label === 'filtered'
+          ? 'Emails matching your filter keywords will appear here.'
           : label === 'interested'
           ? 'Mark emails as Interested to track them here.'
           : 'Received emails will appear here after the next sync.'}
@@ -204,22 +294,34 @@ function EmptyState({ label }: { label: string }) {
 }
 
 // ---------------------------------------------------------------------------
-// Email detail + reply sheet
+// Email detail + reply sheet — Telegram-style chat view
 // ---------------------------------------------------------------------------
 
 function EmailSheet({
   email,
+  thread,
   onClose,
   onReplied,
   onCategoryChange,
 }: {
   email: InboundRow
+  thread: InboundRow[]
   onClose: () => void
-  onReplied: () => void
+  onReplied: (repliedAt: string) => void
   onCategoryChange: (id: number, cat: CategoryKey) => void
 }) {
   const [replyBody, setReplyBody] = useState('')
   const [sending, startSending] = useTransition()
+  const [outbound, setOutbound] = useState<OutboundMessage[]>([])
+  const bottomRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    getOutboundMessages(email.id).then(setOutbound).catch(() => {})
+  }, [email.id])
+
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({ behavior: 'instant' as ScrollBehavior })
+  }, [outbound])
 
   function handleSend() {
     if (!replyBody.trim()) return
@@ -228,12 +330,20 @@ function EmailSheet({
       if (result.ok) {
         toast.success('Reply sent')
         setReplyBody('')
-        onReplied()
+        // Refresh outbound so the new reply bubble appears immediately
+        getOutboundMessages(email.id).then(setOutbound).catch(() => {})
+        onReplied(new Date().toISOString())
       } else {
         toast.error(result.error ?? 'Failed to send reply')
       }
     })
   }
+
+  // Merge inbound thread + outbound messages, sort chronologically
+  const conversation = [
+    ...thread.map((m) => ({ kind: 'inbound' as const, date: m.receivedAt ?? '', data: m })),
+    ...outbound.map((m) => ({ kind: 'outbound' as const, date: m.sentAt ?? '', data: m })),
+  ].sort((a, b) => a.date.localeCompare(b.date))
 
   return (
     <Sheet open onOpenChange={(open) => { if (!open) onClose() }}>
@@ -257,8 +367,6 @@ function EmailSheet({
                 </Badge>
               </>
             )}
-            <span>·</span>
-            <span>{formatDate(email.receivedAt)}</span>
           </div>
           {/* Category row */}
           <div className="mt-2 flex flex-wrap gap-1.5">
@@ -282,18 +390,61 @@ function EmailSheet({
           </div>
         </SheetHeader>
 
-        {/* Email body */}
-        <div className="min-h-0 flex-1 overflow-auto px-6 py-4">
-          {email.bodyHtml ? (
-            <div
-              className="prose prose-sm dark:prose-invert max-w-none text-sm"
-              dangerouslySetInnerHTML={{ __html: email.bodyHtml }}
-            />
-          ) : (
-            <pre className="text-foreground whitespace-pre-wrap font-sans text-sm leading-relaxed">
-              {email.bodyText ?? '(empty)'}
-            </pre>
+        {/* Telegram-style conversation thread */}
+        <div className="min-h-0 flex-1 overflow-auto px-4 py-4 space-y-2">
+          {conversation.length === 0 && (
+            <p className="text-muted-foreground text-center text-sm py-8">Loading conversation…</p>
           )}
+          {conversation.map((item) => {
+            if (item.kind === 'outbound') {
+              const msg = item.data
+              return (
+                <div key={`out-${msg.id}`} className="flex justify-end">
+                  <div className="max-w-[80%]">
+                    <div className="rounded-2xl rounded-tr-sm border border-blue-500/20 bg-blue-500/10 px-4 py-3 text-sm">
+                      <pre className="text-foreground whitespace-pre-wrap font-sans text-sm leading-relaxed">
+                        {msg.body ?? '(empty)'}
+                      </pre>
+                    </div>
+                    <p className="mt-1 text-right text-xs text-muted-foreground pr-1">
+                      {msg.fromEmail ? `${msg.fromEmail} · ` : ''}{formatDate(msg.sentAt)}
+                    </p>
+                  </div>
+                </div>
+              )
+            }
+
+            const msg = item.data
+            const isHighlighted = msg.id === email.id
+            return (
+              <div key={`in-${msg.id}`} className="flex justify-start">
+                <div className="max-w-[80%]">
+                  <div
+                    className={`rounded-2xl rounded-tl-sm border px-4 py-3 text-sm transition-colors ${
+                      isHighlighted
+                        ? 'border-primary/40 bg-primary/5'
+                        : 'border-border bg-card'
+                    }`}
+                  >
+                    {msg.bodyHtml ? (
+                      <div
+                        className="prose prose-sm dark:prose-invert max-w-none text-sm"
+                        dangerouslySetInnerHTML={{ __html: msg.bodyHtml }}
+                      />
+                    ) : (
+                      <pre className="text-foreground whitespace-pre-wrap font-sans text-sm leading-relaxed">
+                        {msg.bodyText ?? '(empty)'}
+                      </pre>
+                    )}
+                  </div>
+                  <p className="mt-1 text-left text-xs text-muted-foreground pl-1">
+                    {msg.fromName || msg.fromEmail} · {formatDate(msg.receivedAt)}
+                  </p>
+                </div>
+              </div>
+            )
+          })}
+          <div ref={bottomRef} />
         </div>
 
         {/* Reply form */}
@@ -328,10 +479,10 @@ function EmailSheet({
 }
 
 // ---------------------------------------------------------------------------
-// Warmup keywords dialog
+// Filter keywords dialog
 // ---------------------------------------------------------------------------
 
-function WarmupKeywordsDialog({
+function FilteredKeywordsDialog({
   initialKeywords,
   onClose,
 }: {
@@ -343,8 +494,8 @@ function WarmupKeywordsDialog({
 
   function handleSave() {
     startSaving(async () => {
-      await saveWarmupKeywords(value)
-      toast.success('Warmup keywords saved')
+      await saveFilteredKeywords(value)
+      toast.success('Filter keywords saved')
       onClose()
     })
   }
@@ -353,12 +504,12 @@ function WarmupKeywordsDialog({
     <Dialog open onOpenChange={(open) => { if (!open) onClose() }}>
       <DialogContent className="max-w-md">
         <DialogHeader>
-          <DialogTitle>Warmup keywords</DialogTitle>
+          <DialogTitle>Filter keywords</DialogTitle>
         </DialogHeader>
         <div className="space-y-3 py-2">
           <p className="text-muted-foreground text-sm">
             Emails containing any of these keywords (in subject or body) will be moved to the
-            Warmup tab. One keyword per line or separated by commas.
+            Filtered tab. One keyword per line or separated by commas.
           </p>
           <Textarea
             className="min-h-32 resize-none font-mono text-sm"
@@ -386,18 +537,53 @@ function WarmupKeywordsDialog({
 // Inbox table
 // ---------------------------------------------------------------------------
 
+function LastInteractionCell({ row }: { row: InboundRow }) {
+  const repliedAt = row.repliedAt ? new Date(row.repliedAt) : null
+  const receivedAt = row.receivedAt ? new Date(row.receivedAt) : null
+
+  const isReply = repliedAt && (!receivedAt || repliedAt > receivedAt)
+  const date = isReply ? row.repliedAt : row.receivedAt
+
+  return (
+    <div className="flex items-center gap-1.5">
+      {isReply ? (
+        <IconArrowUp className="size-3 shrink-0 text-blue-400" />
+      ) : (
+        <IconArrowDown className="size-3 shrink-0 text-emerald-400" />
+      )}
+      <span className="text-muted-foreground text-sm">{formatDate(date)}</span>
+    </div>
+  )
+}
+
 function InboxTable({
   rows,
   emptyLabel,
   onRowClick,
   onCategoryChange,
+  showLastInteraction = false,
 }: {
   rows: InboundRow[]
   emptyLabel: string
   onRowClick: (row: InboundRow) => void
   onCategoryChange: (id: number, cat: CategoryKey) => void
+  showLastInteraction?: boolean
 }) {
+  const [sortKey, setSortKey] = useState<SortKey>('date')
+  const [sortDir, setSortDir] = useState<SortDir>('desc')
+
+  function handleSort(key: SortKey) {
+    if (key === sortKey) {
+      setSortDir((d) => (d === 'asc' ? 'desc' : 'asc'))
+    } else {
+      setSortKey(key)
+      setSortDir('asc')
+    }
+  }
+
   if (rows.length === 0) return <EmptyState label={emptyLabel} />
+
+  const sorted = sortRows(rows, sortKey, sortDir, showLastInteraction)
 
   return (
     <Card>
@@ -406,15 +592,21 @@ function InboxTable({
           <TableHeader>
             <TableRow>
               <TableHead className="w-6" />
-              <TableHead>From</TableHead>
-              <TableHead>Subject</TableHead>
-              <TableHead>Category</TableHead>
-              <TableHead>Mailbox</TableHead>
-              <TableHead>Received</TableHead>
+              <SortableHead label="From" sortKey="from" current={sortKey} dir={sortDir} onSort={handleSort} />
+              <SortableHead label="Subject" sortKey="subject" current={sortKey} dir={sortDir} onSort={handleSort} />
+              <SortableHead label="Category" sortKey="category" current={sortKey} dir={sortDir} onSort={handleSort} className="w-40" />
+              <SortableHead label="Mailbox" sortKey="mailbox" current={sortKey} dir={sortDir} onSort={handleSort} />
+              <SortableHead
+                label={showLastInteraction ? 'Last interaction' : 'Received'}
+                sortKey="date"
+                current={sortKey}
+                dir={sortDir}
+                onSort={handleSort}
+              />
             </TableRow>
           </TableHeader>
           <TableBody>
-            {rows.map((row) => (
+            {sorted.map((row) => (
               <TableRow
                 key={row.id}
                 className="cursor-pointer"
@@ -453,8 +645,12 @@ function InboxTable({
                     <span className="text-muted-foreground/40 text-sm">—</span>
                   )}
                 </TableCell>
-                <TableCell className="text-muted-foreground text-sm">
-                  {formatDate(row.receivedAt)}
+                <TableCell>
+                  {showLastInteraction ? (
+                    <LastInteractionCell row={row} />
+                  ) : (
+                    <span className="text-muted-foreground text-sm">{formatDate(row.receivedAt)}</span>
+                  )}
                 </TableCell>
               </TableRow>
             ))}
@@ -471,10 +667,10 @@ function InboxTable({
 
 export function InboxView({
   emails,
-  warmupKeywords,
+  filteredKeywords,
 }: {
   emails: InboundRow[]
-  warmupKeywords: string
+  filteredKeywords: string
 }) {
   const [search, setSearch] = useState('')
   const [selectedEmail, setSelectedEmail] = useState<InboundRow | null>(null)
@@ -483,19 +679,19 @@ export function InboxView({
   const [localEmails, setLocalEmails] = useState<InboundRow[]>(emails)
 
   const inbox = useMemo(
-    () => filterRows(localEmails.filter((e) => !e.isWarmup), search),
+    () => filterRows(localEmails.filter((e) => !e.isFiltered), search),
     [localEmails, search],
   )
   const interested = useMemo(
-    () => filterRows(localEmails.filter((e) => !e.isWarmup && e.category === 'interested'), search),
+    () => filterRows(localEmails.filter((e) => !e.isFiltered && e.category === 'interested'), search),
     [localEmails, search],
   )
-  const warmup = useMemo(
-    () => filterRows(localEmails.filter((e) => e.isWarmup), search),
+  const filtered = useMemo(
+    () => filterRows(localEmails.filter((e) => e.isFiltered), search),
     [localEmails, search],
   )
 
-  const unreadCount = localEmails.filter((e) => !e.isWarmup && !e.isRead).length
+  const unreadCount = localEmails.filter((e) => !e.isFiltered && !e.isRead).length
 
   function handleRowClick(row: InboundRow) {
     setSelectedEmail(row)
@@ -546,7 +742,7 @@ export function InboxView({
             onClick={() => setShowKeywordsDialog(true)}
           >
             <IconSettings className="size-4" />
-            Warmup keywords
+            Filter keywords
           </Button>
           <Button
             variant="outline"
@@ -595,12 +791,12 @@ export function InboxView({
               </span>
             )}
           </TabsTrigger>
-          <TabsTrigger value="warmup" className="gap-1.5">
+          <TabsTrigger value="filtered" className="gap-1.5">
             <IconFlame className="size-3.5" />
-            Warmup
-            {warmup.length > 0 && (
+            Filtered
+            {filtered.length > 0 && (
               <span className="bg-orange-500/15 text-orange-400 rounded px-1.5 py-0.5 text-xs font-medium">
-                {warmup.length}
+                {filtered.length}
               </span>
             )}
           </TabsTrigger>
@@ -621,31 +817,43 @@ export function InboxView({
             emptyLabel="interested"
             onRowClick={handleRowClick}
             onCategoryChange={handleCategoryChange}
+            showLastInteraction
           />
         </TabsContent>
 
-        <TabsContent value="warmup" className="mt-4">
+        <TabsContent value="filtered" className="mt-4">
           <InboxTable
-            rows={warmup}
-            emptyLabel="warmup"
+            rows={filtered}
+            emptyLabel="filtered"
             onRowClick={handleRowClick}
             onCategoryChange={handleCategoryChange}
           />
         </TabsContent>
+
       </Tabs>
 
       {selectedEmail && (
         <EmailSheet
           email={selectedEmail}
+          thread={localEmails
+            .filter((e) => e.fromEmail === selectedEmail.fromEmail)
+            .sort((a, b) => (a.receivedAt ?? '').localeCompare(b.receivedAt ?? ''))}
           onClose={() => setSelectedEmail(null)}
-          onReplied={() => setSelectedEmail(null)}
+          onReplied={(repliedAt) => {
+            // Keep the sheet open — just update repliedAt/isRead in the row
+            setLocalEmails((prev) =>
+              prev.map((e) =>
+                e.id === selectedEmail.id ? { ...e, repliedAt, isRead: true } : e,
+              ),
+            )
+          }}
           onCategoryChange={handleCategoryChange}
         />
       )}
 
       {showKeywordsDialog && (
-        <WarmupKeywordsDialog
-          initialKeywords={warmupKeywords}
+        <FilteredKeywordsDialog
+          initialKeywords={filteredKeywords}
           onClose={() => setShowKeywordsDialog(false)}
         />
       )}

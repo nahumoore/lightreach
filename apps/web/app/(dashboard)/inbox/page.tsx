@@ -10,7 +10,7 @@ export type InboundRow = {
   subject: string
   bodyText: string | null
   bodyHtml: string | null
-  isWarmup: boolean
+  isFiltered: boolean
   isRead: boolean
   category: string
   receivedAt: string | null
@@ -20,6 +20,7 @@ export type InboundRow = {
   messageId: string | null
   inReplyTo: string | null
   references: string | null
+  repliedAt: string | null
 }
 
 export default async function InboxPage() {
@@ -33,7 +34,7 @@ export default async function InboxPage() {
         subject: inboundEmails.subject,
         bodyText: inboundEmails.bodyText,
         bodyHtml: inboundEmails.bodyHtml,
-        isWarmup: inboundEmails.isWarmup,
+        isFiltered: inboundEmails.isFiltered,
         isRead: inboundEmails.isRead,
         category: inboundEmails.category,
         receivedAt: inboundEmails.receivedAt,
@@ -43,6 +44,7 @@ export default async function InboxPage() {
         messageId: inboundEmails.messageId,
         inReplyTo: inboundEmails.inReplyTo,
         references: inboundEmails.references,
+        repliedAt: inboundEmails.repliedAt,
       })
       .from(inboundEmails)
       .leftJoin(connections, eq(inboundEmails.connectionId, connections.id))
@@ -52,18 +54,19 @@ export default async function InboxPage() {
     db
       .select({ value: appSettings.value })
       .from(appSettings)
-      .where(eq(appSettings.key, 'warmup_keywords')),
+      .where(eq(appSettings.key, 'filter_keywords')),
   ])
 
   const rows: InboundRow[] = rawEmails.map((r) => ({
     ...r,
     receivedAt: r.receivedAt ? r.receivedAt.toISOString() : null,
+    repliedAt: r.repliedAt ? r.repliedAt.toISOString() : null,
   }))
 
   return (
     <InboxView
       emails={rows}
-      warmupKeywords={keywordRow[0]?.value ?? ''}
+      filteredKeywords={keywordRow[0]?.value ?? ''}
     />
   )
 }

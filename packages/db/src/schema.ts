@@ -177,7 +177,6 @@ export const campaignConnections = sqliteTable(
 export const messages = sqliteTable("messages", {
   id: integer("id").primaryKey({ autoIncrement: true }),
   campaignId: integer("campaign_id")
-    .notNull()
     .references(() => campaigns.id, { onDelete: "cascade" }),
   leadId: integer("lead_id")
     .notNull()
@@ -226,9 +225,11 @@ export const inboundEmails = sqliteTable(
     subject: text("subject").notNull().default(""),
     bodyText: text("body_text"),
     bodyHtml: text("body_html"),
-    /** true when subject/body matched a configured warmup keyword */
-    isWarmup: integer("is_warmup", { mode: "boolean" }).notNull().default(false),
+    /** true when subject/body matched a configured filter keyword */
+    isFiltered: integer("is_filtered", { mode: "boolean" }).notNull().default(false),
     isRead: integer("is_read", { mode: "boolean" }).notNull().default(false),
+    /** set when the user sends a reply to this inbound email */
+    repliedAt: integer("replied_at", { mode: "timestamp" }),
     /** 'none' | 'interested' | 'not_interested' | 'meeting_booked' | 'out_of_office' | 'do_not_contact' */
     category: text("category").notNull().default("none"),
     receivedAt: integer("received_at", { mode: "timestamp" }),

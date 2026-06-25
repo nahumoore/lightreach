@@ -15,18 +15,17 @@ import { count, and, eq, gte, inArray } from "drizzle-orm"
 const DAY_LABELS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
 
 async function getDashboardStats() {
-  const [{ total: connectionCount }] = await db
-    .select({ total: count() })
-    .from(connections)
+  const connectionRow = await db.select({ total: count() }).from(connections)
+  const connectionCount = connectionRow[0]?.total ?? 0
 
-  const [{ total: activeCampaignCount }] = await db
+  const activeCampaignRow = await db
     .select({ total: count() })
     .from(campaigns)
     .where(inArray(campaigns.status, ["running", "scheduled"]))
+  const activeCampaignCount = activeCampaignRow[0]?.total ?? 0
 
-  const [{ total: leadCount }] = await db
-    .select({ total: count() })
-    .from(leads)
+  const leadRow = await db.select({ total: count() }).from(leads)
+  const leadCount = leadRow[0]?.total ?? 0
 
   // Last 7 calendar days (today + 6 days back)
   const days = Array.from({ length: 7 }, (_, i) => {

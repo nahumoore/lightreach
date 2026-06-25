@@ -35,6 +35,9 @@ export interface SendPayload {
   /** Optional plain-text version */
   text?: string;
   replyTo?: string;
+  /** RFC822 Message-ID to use (with angle brackets, e.g. <uuid@host>). When provided
+   *  nodemailer uses this value verbatim, guaranteeing the stored ID matches the sent header. */
+  messageId?: string;
   /** RFC822 In-Reply-To header — set when replying to a received message */
   inReplyTo?: string;
   /** RFC822 References header — space-separated message-ids for threading */
@@ -100,6 +103,7 @@ export async function sendMail(
       html: payload.html,
       text: payload.text,
       replyTo: payload.replyTo,
+      messageId: payload.messageId,
       inReplyTo: payload.inReplyTo,
       references: payload.references,
     };
