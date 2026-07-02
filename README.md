@@ -6,6 +6,8 @@ to Instantly, Smartlead, and lemlist.
 Send personalized emails at scale using your own SMTP mailboxes. No paid SaaS, no data
 leaving your machine, no per-seat pricing.
 
+![Campaign Creation Demo](./lightreach-demo-official.gif)
+
 ## Features
 
 - **Multiple connections** — add any number of SMTP mailboxes (Gmail, Outlook, custom); test, pause, and track daily limits per mailbox
