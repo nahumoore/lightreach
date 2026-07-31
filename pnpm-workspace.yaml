@@ -2,6 +2,15 @@ packages:
   - "apps/*"
   - "packages/*"
 
+# Fail the install on an out-of-range Node instead of only warning.
+#
+# better-sqlite3 11.10.0 publishes prebuilt binaries for Node ABI 108, 115, 127
+# and 131 (Node 18, 20, 22, 23). On Node 24+ prebuild-install finds nothing and
+# falls back to node-gyp. When node-gyp is absent the install aborts before pnpm
+# links any .bin directory, and every workspace script then fails with
+# "sh: tsc: command not found", which hides the real cause.
+engineStrict: true
+
 allowBuilds:
   sharp: true
   better-sqlite3: true
