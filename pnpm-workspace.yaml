@@ -7,3 +7,7 @@ allowBuilds:
   better-sqlite3: true
   unrs-resolver: true
   msw: false
+  # The @esbuild/<platform> binary arrives as an optional dependency, so the
+  # postinstall script has nothing to fetch. Skipping it keeps one less
+  # download script in the install path.
+  esbuild: false

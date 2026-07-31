@@ -106,8 +106,22 @@ does not follow these rules.
 - [x] 35 stub files deleted; `guides/` left untouched.
 - [x] `CLAUDE.md` no longer contains the stale milestone list; replaced with a
       pointer to `.trellis/spec/index.md`.
-- [ ] `pnpm typecheck` — **could not run.** The workspace `node_modules` is
-      incomplete: no `.bin` directories exist, so `turbo` and `tsc` are both
-      unresolvable (`sh: tsc: command not found` in all three packages). This is
-      pre-existing and unrelated to this task, which changed only Markdown. Needs
-      a `pnpm install` before any code work starts.
+- [x] `pnpm typecheck` passes. 4 of 4 packages successful.
+
+      This needed a toolchain repair first. `better-sqlite3@11.10.0` ships
+      prebuilt binaries for Node 18 to 23 only, and the machine ran Node 26.5.0
+      from Homebrew, so `prebuild-install` fell back to `node-gyp`, which was not
+      installed. The install aborted before pnpm linked any `.bin` directory,
+      which is why `tsc` could not resolve.
+
+      Fix: installed `fnm`, installed Node 22.23.2, and pinned it with `.nvmrc`.
+      The prebuilt binary then resolved and the install completed.
+
+      Second blocker after that: pnpm 11 treats ignored build scripts as a hard
+      error, and its pre-script dependency check re-runs `install`, so every
+      script failed on `ERR_PNPM_IGNORED_BUILDS` for esbuild.
+      `pnpm-workspace.yaml` carried the placeholder
+      `esbuild: set this to true or false`. Set it to `false`: the
+      `@esbuild/<platform>` binary arrives as an optional dependency, so the
+      postinstall script has nothing to fetch. Verified `drizzle-kit --version`
+      still works and the `better-sqlite3` native binding loads.
