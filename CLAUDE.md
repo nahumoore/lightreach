@@ -229,16 +229,9 @@ stores them in `inbound_emails`, and marks any matching outbound `messages` as r
 
 ---
 
-## Next Milestones
+## Coding Specs
 
-- [x] DB schema + migrations
-- [x] Core utilities (spintax, variables, crypto, csv, rotation, transport, imap)
-- [x] App shell — all routes, sidebar, layout
-- [x] Sequences (multi-step) — create, edit, steps
-- [x] Campaigns — create, launch, send loop in scheduler
-- [x] Inbox / IMAP polling — fetch + reply detection
-- [ ] Connections: "test connection" verification server action
-- [ ] Leads: CSV upload → column mapping wizard → insert into DB (full flow)
-- [ ] Campaign send-test / preview email server action
-- [ ] Bounce/reply webhook handling
-- [ ] Auth (single-user password or API key gate)
+Per-package conventions live in `.trellis/spec/`, backed by real files in this
+repo. Start at `.trellis/spec/index.md` for the package map, the documented
+patterns, and the three things this repo does not have (tests, a logger, and
+dashboard auth).
