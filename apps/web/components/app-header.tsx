@@ -12,6 +12,7 @@ const routeLabels: Record<string, string> = {
   "/connections": "Connections",
   "/leads": "Leads",
   "/sequences": "Sequences",
+  "/suppressions": "Suppressions",
   "/templates": "Templates",
   "/campaigns": "Campaigns",
   "/emails": "Emails",

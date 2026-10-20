@@ -19,8 +19,10 @@ import {
   IconCheck,
   IconX,
 } from "@tabler/icons-react"
+import { getAppUrl } from "@/lib/suppression"
 
 const encKeySet = !!process.env["APP_ENCRYPTION_KEY"]
+const appUrl = getAppUrl()
 
 export default function SettingsPage() {
   return (
@@ -75,6 +77,39 @@ export default function SettingsPage() {
               <IconCheck className="size-3" />
               {process.env["DATABASE_URL"] ?? "file:./data.db (default)"}
             </Badge>
+          </div>
+
+          <div className="flex items-center justify-between gap-4 rounded-md border px-4 py-3">
+            <div>
+              <p className="text-sm font-medium font-mono">APP_URL</p>
+              <p className="text-muted-foreground mt-0.5 text-xs">
+                {appUrl === null && (
+                  <>
+                    Optional. Public URL of this app. While unset, unsubscribe headers use a mailto
+                    link only. Set it to an https URL to enable one-click unsubscribe.
+                  </>
+                )}
+                {appUrl?.startsWith("https://") && (
+                  <>One-click unsubscribe is on. Emails link to {appUrl}.</>
+                )}
+                {appUrl?.startsWith("http://") && (
+                  <>
+                    Emails link to {appUrl}, but one-click unsubscribe needs https, so mail clients
+                    will not offer it.
+                  </>
+                )}
+              </p>
+            </div>
+            {appUrl === null && <Badge variant="secondary">Not set</Badge>}
+            {appUrl?.startsWith("https://") && (
+              <Badge className="bg-emerald-500/15 text-emerald-400 gap-1">
+                <IconCheck className="size-3" />
+                Set (https)
+              </Badge>
+            )}
+            {appUrl?.startsWith("http://") && (
+              <Badge className="bg-amber-500/15 text-amber-400 gap-1">Set (http only)</Badge>
+            )}
           </div>
 
           {!encKeySet && (

@@ -15,7 +15,8 @@
     "./email/transport": "./src/email/transport.ts",
     "./email/imap": "./src/email/imap.ts",
     "./email/dns": "./src/email/dns.ts",
-    "./email/quote": "./src/email/quote.ts"
+    "./email/quote": "./src/email/quote.ts",
+    "./email/bounce": "./src/email/bounce.ts"
   },
   "dependencies": {
     "imapflow": "^1.4.2",

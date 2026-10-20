@@ -207,6 +207,36 @@ const TOOL_GROUPS: { group: string; tools: ToolEntry[] }[] = [
       },
     ],
   },
+  {
+    group: 'Suppressions',
+    tools: [
+      {
+        name: 'list_suppressions',
+        description: 'List suppressed emails and domains (filterable)',
+        params: 'search?, kind?, reason?, limit?',
+      },
+      {
+        name: 'add_suppression',
+        description: 'Never email an address or domain again',
+        params: 'value',
+      },
+      {
+        name: 'remove_suppression',
+        description: 'Remove an entry (lead statuses are not reset)',
+        params: 'id? | value?',
+      },
+      {
+        name: 'import_suppressions',
+        description: 'Bulk-add from an array or CSV text',
+        params: 'values[]? | csv?',
+      },
+      {
+        name: 'check_suppression',
+        description: 'Check if an address is suppressed, with lead statuses',
+        params: 'email? | leadId?',
+      },
+    ],
+  },
 ]
 
 // ---------------------------------------------------------------------------

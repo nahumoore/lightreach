@@ -45,6 +45,12 @@ export interface ParsedEmail {
   /** Recipient addresses extracted from DSN Final-Recipient / Original-Recipient /
    *  X-Failed-Recipients fields, for correlating a bounce back to a lead by email. */
   failedRecipients: string[];
+  /** DSN `Action` field (failed, delayed, ...), or null if the message has none. */
+  bounceAction: string | null;
+  /** DSN enhanced status code, e.g. "5.1.1", or null if the message has none. */
+  bounceStatus: string | null;
+  /** DSN `Diagnostic-Code` text with folded lines joined, or null if the message has none. */
+  bounceDiagnostic: string | null;
 }
 
 export interface FetchRecentResult {
@@ -191,6 +197,9 @@ function extractAddress(addr: AddressObject | AddressObject[] | undefined): {
 function extractBounceDetails(rawSource: string): {
   embeddedMessageIds: string[];
   failedRecipients: string[];
+  action: string | null;
+  status: string | null;
+  diagnostic: string | null;
 } {
   const embeddedMessageIds = new Set<string>();
   for (const m of rawSource.matchAll(/Message-ID:\s*<([^>]+)>/gi)) {
@@ -209,7 +218,24 @@ function extractBounceDetails(rawSource: string): {
     }
   }
 
-  return { embeddedMessageIds: [...embeddedMessageIds], failedRecipients: [...failedRecipients] };
+  // Per-recipient DSN fields (RFC 3464). Take the first occurrence. We only
+  // ever send to one recipient per message, so a DSN describes a single failure.
+  const action = /^Action:\s*([a-z]+)/im.exec(rawSource)?.[1]?.toLowerCase() ?? null;
+  const status = /^Status:\s*(\d\.\d{1,3}\.\d{1,3})/im.exec(rawSource)?.[1] ?? null;
+  // Diagnostic-Code is "<type>; <text>" and long values are folded onto indented continuation lines.
+  const diagnostic =
+    /^Diagnostic-Code:[^;\r\n]*;[ \t]*([^\r\n]*(?:\r?\n[ \t]+[^\r\n]*)*)/im
+      .exec(rawSource)?.[1]
+      ?.replace(/\r?\n[ \t]+/g, " ")
+      .trim() || null;
+
+  return {
+    embeddedMessageIds: [...embeddedMessageIds],
+    failedRecipients: [...failedRecipients],
+    action,
+    status,
+    diagnostic,
+  };
 }
 
 /**
@@ -289,6 +315,9 @@ export async function fetchRecent(
         receivedAt: parsed.date ?? null,
         embeddedMessageIds: bounceDetails.embeddedMessageIds,
         failedRecipients: bounceDetails.failedRecipients,
+        bounceAction: bounceDetails.action,
+        bounceStatus: bounceDetails.status,
+        bounceDiagnostic: bounceDetails.diagnostic,
       });
     }
   } finally {

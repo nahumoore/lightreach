@@ -16,6 +16,8 @@ leaving your machine, no per-seat pricing.
 - **Sequences** — multi-step email sequences with configurable delays between steps; write with `{spintax|options}` and `{{variable|fallback}}` placeholders; live preview
 - **Campaigns** — pair a sequence with a lead list; choose which mailboxes to rotate across; set a send schedule
 - **Scheduling** — send-window (time of day), days of week, daily cap, and randomized delay jitter between sends
+- **Unsubscribe & suppression**: every campaign email carries a `List-Unsubscribe` header (one-click when `APP_URL` is https); unsubscribes, STOP replies and hard bounces go on a global do-not-email list that is checked before every send. Add or CSV-import addresses and whole domains yourself
+- **Bounce handling**: a dead address stops the lead and is suppressed; a permanent policy or spam block stops the lead but is not suppressed; delay notices and full mailboxes change nothing
 - **Email rotation** — spread sends evenly across mailboxes; respect per-account daily limits
 - **Dashboard** — activity overview and send analytics
 
@@ -63,6 +65,7 @@ pnpm dev
 |---|---|---|
 | `APP_ENCRYPTION_KEY` | ✅ | 64 hex chars (32 bytes). Encrypt SMTP passwords at rest. Generate: `openssl rand -hex 32` |
 | `DATABASE_URL` | — | SQLite path. Defaults to `file:./data.db` |
+| `APP_URL` | — | Public base URL of this app, e.g. `https://outreach.example.com`. Used for the unsubscribe link in the `List-Unsubscribe` header; one-click unsubscribe is only enabled when it is `https`. If unset, the header carries a mailto link only. The `/api/unsubscribe` path must be reachable without a login (the bundled Traefik config already allows this) |
 
 ## Security
 

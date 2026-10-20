@@ -12,9 +12,11 @@ import { sendMail, buildMessageId, appendUnsubscribeFooter } from '@workspace/co
 import { pickNext, isWithinSendWindow, randomDelayMs, startOfDayInTimezone } from '@workspace/core/rotation'
 import { expandSpintax } from '@workspace/core/spintax'
 import { renderVariables } from '@workspace/core/variables'
+import { classifyBounce } from '@workspace/core/email/bounce'
 import { eq, and, lt, lte, gte, isNotNull, asc, desc, sql } from 'drizzle-orm'
 import { randomUUID } from 'crypto'
 import { enqueueNewLeads } from '@/lib/enqueue-leads'
+import { isSuppressed, suppress, buildUnsubscribeHeaders } from '@/lib/suppression'
 
 const TICK_MS = 60_000
 const BATCH_SIZE = 10
@@ -33,23 +35,40 @@ function normalizeMessageId(id: string | null | undefined): string | null {
   return id.replace(/^<|>$/g, '').trim() || null
 }
 
+/** RCPT TO rejections that are about our mailbox, not the recipient. */
+const SENDER_SIDE_RE = /sender address rejected|relay access denied|relaying denied|sending limit|rate limit/i
+
 /**
- * A hard bounce means the recipient address itself is invalid and future
- * sends to it should stop. 552 (mailbox full/quota) is a transient condition
- * on an otherwise-valid address, not a permanent failure, so it's excluded.
+ * What a failed send says about the lead. Only a rejection of the recipient
+ * itself (nodemailer sets `command` to 'RCPT TO') is about the lead. Errors at
+ * MAIL FROM, DATA, AUTH or the connection are the mailbox's problem, so they
+ * never change the lead and go through the retry path.
+ *
+ *   'hard'  the address is dead: lead bounced and the address suppressed
+ *   'block' permanent rejection, not proof the address is dead (policy, spam):
+ *           lead bounced, address not suppressed
+ *   null    anything else: retry with backoff
+ *
+ * Only 550-554 are treated as recipient rejections, as before. Some servers
+ * reject the sender at RCPT TO too (bad sender domain, relay denied, sending
+ * limit); those are the mailbox's problem and also go through the retry path.
  */
-function isHardBounce(err: unknown): boolean {
-  const code = (err as { responseCode?: number }).responseCode
-  if (code !== undefined) {
-    if (code === 552) return false
-    return code >= 550 && code <= 554
-  }
-  const msg = err instanceof Error ? err.message : String(err)
-  if (/\b552\b/.test(msg)) return false
-  if (/\b55[0134]\b/.test(msg)) return true
-  return /\b(user.*unknown|mailbox.*unavailable|no.*such.*user|address.*rejected|does not exist|invalid.*mailbox)\b/i.test(
-    msg,
-  )
+function classifySendFailure(err: unknown): 'hard' | 'block' | null {
+  const e = err as { command?: string; responseCode?: number; response?: string }
+  const code = e.responseCode
+  if (e.command !== 'RCPT TO' || code === undefined || code < 550 || code > 554) return null
+
+  const text = e.response ?? (err instanceof Error ? err.message : String(err))
+  const status = /\b[245]\.\d{1,3}\.\d{1,3}\b/.exec(text)?.[0]
+  if ((status && /^5\.(1\.[78]|4\.5)$/.test(status)) || SENDER_SIDE_RE.test(text)) return null
+
+  const kind = classifyBounce({
+    smtpCode: code,
+    status,
+    diagnostic: text,
+  })
+  // Soft here is a full mailbox (552 / 5.2.2): retry like any transient error.
+  return kind === 'soft' ? null : kind
 }
 
 let schedulerHandle: ReturnType<typeof setInterval> | null = null
@@ -319,6 +338,16 @@ async function runTick(): Promise<void> {
       continue
     }
 
+    // Skip if the address or its whole domain is suppressed. Checked at send
+    // time, so entries added after launch (or via another list) still apply.
+    if (await isSuppressed(lead.email)) {
+      await db
+        .update(messages)
+        .set({ status: 'skipped', error: 'Suppressed' })
+        .where(and(eq(messages.leadId, msg.leadId), eq(messages.status, 'queued')))
+      continue
+    }
+
     // Skip if campaign has no sequence
     if (!msg.sequenceId) {
       await db
@@ -469,6 +498,11 @@ async function runTick(): Promise<void> {
           messageId: outboundMessageId,
           inReplyTo: threadInReplyTo,
           references: threadReferences,
+          headers: buildUnsubscribeHeaders({
+            email: lead.email,
+            messageRowId: msg.msgId,
+            mailbox: chosenConn.fromEmail,
+          }),
         },
       )
 
@@ -525,7 +559,8 @@ async function runTick(): Promise<void> {
       const errMsg = err instanceof Error ? err.message : String(err)
       console.error(`[Lightreach] Failed to send message ${msg.msgId}:`, errMsg)
 
-      if (isHardBounce(err)) {
+      const failure = classifySendFailure(err)
+      if (failure) {
         await db
           .update(messages)
           .set({ status: 'failed', error: errMsg })
@@ -538,8 +573,19 @@ async function runTick(): Promise<void> {
           .update(messages)
           .set({ status: 'skipped' })
           .where(and(eq(messages.leadId, msg.leadId), eq(messages.status, 'queued')))
+        // A block (policy, spam) is not proof the address is dead, so only a
+        // hard bounce goes on the suppression list.
+        if (failure === 'hard') {
+          await suppress({
+            kind: 'email',
+            value: lead.email,
+            reason: 'bounced',
+            leadId: msg.leadId,
+            messageId: msg.msgId,
+          })
+        }
         console.log(
-          `[Lightreach] Hard bounce for lead ${msg.leadId} (message ${msg.msgId}) — lead marked bounced, future messages skipped`,
+          `[Lightreach] ${failure === 'hard' ? 'Hard bounce' : 'Recipient rejected'} for lead ${msg.leadId} (message ${msg.msgId}) — lead marked bounced, future messages skipped`,
         )
       } else {
         // Transient failure: retry with backoff instead of failing terminally.

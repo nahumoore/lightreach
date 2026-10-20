@@ -3,7 +3,9 @@ import { connections, inboundEmails, appSettings, messages, leads } from '@works
 import { decrypt } from '@workspace/core/crypto'
 import { resolveImapConfig, fetchRecent } from '@workspace/core/email/imap'
 import type { ParsedEmail } from '@workspace/core/email/imap'
+import { classifyBounce } from '@workspace/core/email/bounce'
 import { eq, and, max, inArray, sql, isNotNull, desc } from 'drizzle-orm'
+import { suppress } from '@/lib/suppression'
 
 const TICK_MS = 120_000
 
@@ -264,10 +266,30 @@ async function markLeadStatus(
   leadId: number,
   status: 'replied' | 'bounced' | 'unsubscribed',
   context: string,
+  /** Add the lead's address to the suppression list. Defaults to yes for bounced/unsubscribed. */
+  suppressAddress = status !== 'replied',
 ): Promise<void> {
-  const [currentLead] = await db.select({ status: leads.status }).from(leads).where(eq(leads.id, leadId))
+  const [currentLead] = await db
+    .select({ status: leads.status, email: leads.email })
+    .from(leads)
+    .where(eq(leads.id, leadId))
+  if (!currentLead) return
+
+  // Bounces and opt-outs follow the address, not just this lead row, so the
+  // same person in another list is never mailed again. Recorded even when the
+  // lead is already terminal (e.g. its status was set by hand): inserting
+  // twice is a no-op.
+  if (suppressAddress) {
+    await suppress({
+      kind: 'email',
+      value: currentLead.email,
+      reason: status === 'bounced' ? 'bounced' : 'stop_reply',
+      leadId,
+    })
+  }
+
   // Terminal statuses (bounced/unsubscribed) never get overwritten by a later reply.
-  if (!currentLead || currentLead.status === 'bounced' || currentLead.status === 'unsubscribed') return
+  if (currentLead.status === 'bounced' || currentLead.status === 'unsubscribed') return
 
   await db.update(leads).set({ status }).where(eq(leads.id, leadId))
   await db
@@ -309,7 +331,22 @@ async function handleBounce(email: ParsedEmail): Promise<void> {
     return
   }
 
-  await markLeadStatus(match.leadId, 'bounced', 'DSN bounce')
+  // hard: the address is dead, so stop the lead and suppress it everywhere.
+  // block (e.g. 5.7.x): the server permanently refused us, so stop sending to
+  // it, but that is not proof the address is dead, so it is not suppressed.
+  // soft (delay notices, full mailboxes): the lead stays active.
+  const kind = classifyBounce({
+    action: email.bounceAction,
+    status: email.bounceStatus,
+    diagnostic: email.bounceDiagnostic,
+    subject: email.subject,
+  })
+  if (kind === 'soft') {
+    console.log(`[Lightreach] Inbox: soft bounce for lead ${match.leadId}, lead left active`)
+    return
+  }
+
+  await markLeadStatus(match.leadId, 'bounced', `DSN ${kind} bounce`, kind === 'hard')
 }
 
 async function classifyAndActOnInbound(email: ParsedEmail): Promise<void> {

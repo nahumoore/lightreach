@@ -292,6 +292,37 @@ export const appSettings = sqliteTable("app_settings", {
 });
 
 // ---------------------------------------------------------------------------
+// suppressions — addresses and domains that must never be emailed again
+// ---------------------------------------------------------------------------
+export const suppressions = sqliteTable(
+  "suppressions",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    /** 'email' | 'domain' */
+    kind: text("kind").notNull(),
+    /** Lowercased and trimmed. Domains are stored without the leading "@". */
+    value: text("value").notNull(),
+    /** 'unsubscribed' | 'bounced' | 'stop_reply' | 'manual' | 'import' */
+    reason: text("reason").notNull(),
+    /** Lead that triggered the entry, if any. Kept as history only — the
+     *  suppression applies to the address, not to this lead row. */
+    leadId: integer("lead_id").references(() => leads.id, {
+      onDelete: "set null",
+    }),
+    /** Outbound `messages` row that triggered the entry, if any. */
+    messageId: integer("message_id").references(() => messages.id, {
+      onDelete: "set null",
+    }),
+    createdAt: integer("created_at", { mode: "timestamp" })
+      .notNull()
+      .default(sql`(unixepoch())`),
+  },
+  (table) => [
+    uniqueIndex("suppression_kind_value_unique").on(table.kind, table.value),
+  ],
+);
+
+// ---------------------------------------------------------------------------
 // Inferred types — convenient for use across the app
 // ---------------------------------------------------------------------------
 export type Connection = typeof connections.$inferSelect;
@@ -320,3 +351,6 @@ export type InboundEmail = typeof inboundEmails.$inferSelect;
 export type NewInboundEmail = typeof inboundEmails.$inferInsert;
 
 export type AppSetting = typeof appSettings.$inferSelect;
+
+export type Suppression = typeof suppressions.$inferSelect;
+export type NewSuppression = typeof suppressions.$inferInsert;

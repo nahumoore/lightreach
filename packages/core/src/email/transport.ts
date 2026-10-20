@@ -42,6 +42,8 @@ export interface SendPayload {
   inReplyTo?: string;
   /** RFC822 References header — space-separated message-ids for threading */
   references?: string;
+  /** Extra headers added verbatim, e.g. List-Unsubscribe */
+  headers?: Record<string, string>;
 }
 
 // Fail fast rather than hang forever against a black-holed or slow-to-respond host.
@@ -157,6 +159,7 @@ export async function sendMail(
       messageId: payload.messageId,
       inReplyTo: payload.inReplyTo,
       references: payload.references,
+      headers: payload.headers,
     };
 
     const info = await transport.sendMail(mailOptions);

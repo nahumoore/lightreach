@@ -36,6 +36,16 @@ services:
       - "traefik.http.middlewares.lightreach-ratelimit.ratelimit.average=5"
       - "traefik.http.middlewares.lightreach-ratelimit.ratelimit.burst=10"
       - "traefik.http.services.lightreach.loadbalancer.server.port=3000"
+      # Unsubscribe links are opened by email recipients, who have no basic-auth
+      # login. This router matches first (higher priority) and skips the auth
+      # middleware; the rate limit stays. Each link is an encrypted token.
+      - "traefik.http.routers.lightreach-unsubscribe.rule=Host(`${DOMAIN}`) && PathPrefix(`/api/unsubscribe`)"
+      - "traefik.http.routers.lightreach-unsubscribe.priority=1000"
+      - "traefik.http.routers.lightreach-unsubscribe.entrypoints=websecure"
+      - "traefik.http.routers.lightreach-unsubscribe.tls=true"
+      - "traefik.http.routers.lightreach-unsubscribe.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.lightreach-unsubscribe.middlewares=lightreach-ratelimit"
+      - "traefik.http.routers.lightreach-unsubscribe.service=lightreach"
 
 volumes:
   lightreach-data:

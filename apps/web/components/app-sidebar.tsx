@@ -26,6 +26,7 @@ import {
   IconInbox,
   IconMailbox,
   IconPlug,
+  IconBan,
 } from "@tabler/icons-react"
 
 const overviewItems = [
@@ -36,6 +37,7 @@ const setupItems = [
   { label: "Connections", href: "/connections", icon: IconMail },
   { label: "Leads", href: "/leads", icon: IconUsers },
   { label: "Sequences", href: "/sequences", icon: IconTemplate },
+  { label: "Suppressions", href: "/suppressions", icon: IconBan },
 ]
 
 const outreachItems = [
