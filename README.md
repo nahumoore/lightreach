@@ -11,7 +11,7 @@ leaving your machine, no per-seat pricing.
 ## Features
 
 - **Multiple connections** — add any number of SMTP mailboxes (Gmail, Outlook, custom); test, pause, and track daily limits per mailbox
-- **Inbox / IMAP** — poll received mail across all mailboxes; automatic reply and warmup detection
+- **Inbox / IMAP** — poll received mail across all mailboxes; automatic reply and warmup detection; replies are linked to their lead and campaign, with filters for mailbox, campaign, label, unread and replies only, and one-click labelling of a whole conversation
 - **Leads** — upload CSVs with a visual column-mapping wizard; manage lists and individual contacts
 - **Sequences** — multi-step email sequences with configurable delays between steps; write with `{spintax|options}` and `{{variable|fallback}}` placeholders; live preview
 - **Campaigns** — pair a sequence with a lead list; choose which mailboxes to rotate across; set a send schedule

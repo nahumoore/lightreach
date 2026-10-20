@@ -18,7 +18,7 @@ services beyond your own SMTP mailboxes, and runs from a single `pnpm dev` comma
 |---|---|
 | **Dashboard** | Activity overview and send analytics. |
 | **Connections** | Add SMTP mailboxes (Gmail, Outlook, custom). Test, pause, track daily limits. Optional IMAP config per mailbox. |
-| **Inbox / Emails** | Poll received mail across all IMAP mailboxes. Automatic reply and warmup detection. |
+| **Inbox / Emails** | Poll received mail across all IMAP mailboxes. Automatic reply and warmup detection. Replies are linked to the lead and campaign they answer; filter by mailbox, campaign, label, unread or replies only, and label a whole lead's conversation at once. |
 | **Leads** | Upload CSVs with column-mapping wizard. Manage lists + individual leads. |
 | **Sequences** | Multi-step email sequences with configurable `delayDays` between steps. Write with `{spintax\|options}` and `{{variable\|fallback}}` placeholders. Live preview. |
 | **Campaigns** | Pair a sequence with a lead list, assign mailboxes to rotate across, set schedule. |
@@ -201,7 +201,7 @@ docker compose up -d
 | `campaigns` | Pair sequence + list + mailboxes + schedule |
 | `campaign_connections` | Many-to-many: campaign ↔ connection (rotation set) |
 | `messages` | Per-lead send queue + delivery log |
-| `inbound_emails` | Received mail fetched via IMAP (replies, warmup) |
+| `inbound_emails` | Received mail fetched via IMAP (replies, warmup), linked to the matching `lead_id` / `campaign_id` |
 | `app_settings` | Key-value store for app-level preferences |
 
 See `packages/db/src/schema.ts` for full column definitions.
@@ -226,6 +226,17 @@ not on a serverless platform that spins down between requests.
 **Inbox poller** (`lib/inbox-poller.ts`):
 Periodically fetches new mail via IMAP across all active connections with IMAP configured,
 stores them in `inbound_emails`, and marks any matching outbound `messages` as replied.
+Each new email is matched to a lead (threading headers with a same-domain check, then sender
+address; never by subject) and the match is saved as `inbound_emails.lead_id` / `campaign_id`.
+Rows fetched before those columns existed are linked once at startup (guarded by the
+`inbound_lead_link_backfilled` flag in `app_settings`). Bounce notifications are not linked and
+are shown in the Filtered tab of `/inbox`. Out-of-office auto-replies are linked (so they appear
+in the thread) but flagged `is_auto_reply`, so "Replies only" leaves them out.
+
+**Inbox MCP tools** (`lib/mcp/tools/inbox.ts`): `list_inbound_emails` returns newest first (it had
+no ordering before) and pages with `limit` / `offset`; `repliesOnly` means linked to a lead and not
+an auto-reply. `set_lead_label` labels every email from a lead, `mark_thread_read` marks a whole
+conversation read, and `get_thread` follows the email's `lead_id` when it has one.
 
 ---
 

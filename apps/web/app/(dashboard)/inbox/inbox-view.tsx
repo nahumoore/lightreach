@@ -20,11 +20,19 @@ import {
 import { Input } from '@workspace/ui/components/input'
 import { Label } from '@workspace/ui/components/label'
 import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@workspace/ui/components/select'
+import {
   Sheet,
   SheetContent,
   SheetHeader,
   SheetTitle,
 } from '@workspace/ui/components/sheet'
+import { Switch } from '@workspace/ui/components/switch'
 import {
   Table,
   TableBody,
@@ -59,8 +67,17 @@ import {
 import { toast } from 'sonner'
 import { splitQuotedReply } from '@workspace/core/email/quote'
 import type { InboundRow } from './page'
-import { markRead, markUnread, replyToEmail, saveFilteredKeywords, triggerFetch, categorizeEmail, getOutboundMessages } from './actions'
-import type { OutboundMessage } from './actions'
+import {
+  markThreadRead,
+  markUnread,
+  replyToEmail,
+  saveFilteredKeywords,
+  triggerFetch,
+  categorizeEmail,
+  setLeadLabel,
+  getFullThread,
+} from './actions'
+import type { ThreadMessage } from './actions'
 
 // ---------------------------------------------------------------------------
 // Category config
@@ -107,6 +124,9 @@ const CATEGORIES: { value: CategoryKey; label: string; badge: string; icon: Reac
   },
 ]
 
+/** Sentinel for "no filter" in the filter dropdowns */
+const ALL = 'all'
+
 function getCategoryMeta(value: string) {
   return CATEGORIES.find((c) => c.value === value) ?? CATEGORIES[0]!
 }
@@ -131,6 +151,17 @@ function formatDate(iso: string | null): string {
   return years === 1 ? '1 year ago' : `${years} years ago`
 }
 
+/** Distinct id/label pairs (ignoring rows without one), sorted by label — feeds the filter dropdowns. */
+function buildOptions(pairs: [number | null, string | null][]): { id: number; label: string }[] {
+  const byId = new Map<number, string>()
+  for (const [id, label] of pairs) {
+    if (id != null && label) byId.set(id, label)
+  }
+  return [...byId]
+    .map(([id, label]) => ({ id, label }))
+    .sort((a, b) => a.label.localeCompare(b.label))
+}
+
 function filterRows(rows: InboundRow[], query: string): InboundRow[] {
   const q = query.trim().toLowerCase()
   if (!q) return rows
@@ -147,7 +178,7 @@ function filterRows(rows: InboundRow[], query: string): InboundRow[] {
 // Sorting
 // ---------------------------------------------------------------------------
 
-type SortKey = 'from' | 'subject' | 'category' | 'mailbox' | 'date'
+type SortKey = 'from' | 'subject' | 'category' | 'mailbox' | 'campaign' | 'date'
 type SortDir = 'asc' | 'desc'
 
 function sortRows(rows: InboundRow[], key: SortKey, dir: SortDir, showLastInteraction: boolean): InboundRow[] {
@@ -170,6 +201,10 @@ function sortRows(rows: InboundRow[], key: SortKey, dir: SortDir, showLastIntera
       case 'mailbox':
         av = (a.connectionLabel ?? '').toLowerCase()
         bv = (b.connectionLabel ?? '').toLowerCase()
+        break
+      case 'campaign':
+        av = (a.campaignName ?? '').toLowerCase()
+        bv = (b.campaignName ?? '').toLowerCase()
         break
       case 'date':
         if (showLastInteraction) {
@@ -285,7 +320,7 @@ function EmptyState({ label }: { label: string }) {
       <p className="text-foreground text-sm font-medium">No {label} emails</p>
       <p className="text-muted-foreground mt-1 text-sm">
         {label === 'filtered'
-          ? 'Emails matching your filter keywords will appear here.'
+          ? 'Bounces and emails matching your filter keywords will appear here.'
           : label === 'interested'
           ? 'Mark emails as Interested to track them here.'
           : 'Received emails will appear here after the next sync.'}
@@ -365,29 +400,31 @@ function InboundBody({
 
 function EmailSheet({
   email,
-  thread,
   onClose,
   onReplied,
   onCategoryChange,
+  onLeadLabelChange,
+  onMarkUnread,
 }: {
   email: InboundRow
-  thread: InboundRow[]
   onClose: () => void
   onReplied: (repliedAt: string) => void
   onCategoryChange: (id: number, cat: CategoryKey) => void
+  onLeadLabelChange: (leadId: number, cat: CategoryKey) => void
+  onMarkUnread: (id: number) => void
 }) {
   const [replyBody, setReplyBody] = useState('')
   const [sending, startSending] = useTransition()
-  const [outbound, setOutbound] = useState<OutboundMessage[]>([])
+  const [thread, setThread] = useState<ThreadMessage[] | null>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
-    getOutboundMessages(email.id).then(setOutbound).catch(() => {})
+    getFullThread(email.id).then(setThread).catch(() => {})
   }, [email.id])
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'instant' as ScrollBehavior })
-  }, [outbound])
+  }, [thread])
 
   function handleSend() {
     if (!replyBody.trim()) return
@@ -396,20 +433,14 @@ function EmailSheet({
       if (result.ok) {
         toast.success('Reply sent')
         setReplyBody('')
-        // Refresh outbound so the new reply bubble appears immediately
-        getOutboundMessages(email.id).then(setOutbound).catch(() => {})
+        // Refresh the thread so the new reply bubble appears immediately
+        getFullThread(email.id).then(setThread).catch(() => {})
         onReplied(new Date().toISOString())
       } else {
         toast.error(result.error ?? 'Failed to send reply')
       }
     })
   }
-
-  // Merge inbound thread + outbound messages, sort chronologically
-  const conversation = [
-    ...thread.map((m) => ({ kind: 'inbound' as const, date: m.receivedAt ?? '', data: m })),
-    ...outbound.map((m) => ({ kind: 'outbound' as const, date: m.sentAt ?? '', data: m })),
-  ].sort((a, b) => a.date.localeCompare(b.date))
 
   return (
     <Sheet open onOpenChange={(open) => { if (!open) onClose() }}>
@@ -433,15 +464,25 @@ function EmailSheet({
                 </Badge>
               </>
             )}
+            {email.campaignName && (
+              <Badge variant="outline" className="text-xs font-normal">
+                {email.campaignName}
+              </Badge>
+            )}
           </div>
-          {/* Category row */}
+          {/* Category row — labels every email from the lead when the email is linked to one */}
           <div className="mt-2 flex flex-wrap gap-1.5">
             {CATEGORIES.filter((c) => c.value !== 'none').map((cat) => {
               const active = email.category === cat.value
               return (
                 <button
                   key={cat.value}
-                  onClick={() => onCategoryChange(email.id, cat.value)}
+                  title={email.leadId != null ? 'Labels all emails from this lead' : undefined}
+                  onClick={() =>
+                    email.leadId != null
+                      ? onLeadLabelChange(email.leadId, cat.value)
+                      : onCategoryChange(email.id, cat.value)
+                  }
                   className={`inline-flex items-center gap-1 rounded border px-2 py-0.5 text-xs font-medium transition-all ${
                     active
                       ? cat.badge
@@ -458,12 +499,11 @@ function EmailSheet({
 
         {/* Telegram-style conversation thread */}
         <div className="min-h-0 flex-1 overflow-auto px-4 py-4 space-y-2">
-          {conversation.length === 0 && (
+          {thread === null && (
             <p className="text-muted-foreground text-center text-sm py-8">Loading conversation…</p>
           )}
-          {conversation.map((item) => {
-            if (item.kind === 'outbound') {
-              const msg = item.data
+          {thread?.map((msg) => {
+            if (msg.direction === 'outbound') {
               return (
                 <div key={`out-${msg.id}`} className="flex justify-end">
                   <div className="max-w-[80%]">
@@ -478,14 +518,13 @@ function EmailSheet({
                       )}
                     </div>
                     <p className="mt-1 text-right text-xs text-muted-foreground pr-1">
-                      {msg.fromEmail ? `${msg.fromEmail} · ` : ''}{formatDate(msg.sentAt)}
+                      {msg.fromEmail ? `${msg.fromEmail} · ` : ''}{formatDate(msg.date)}
                     </p>
                   </div>
                 </div>
               )
             }
 
-            const msg = item.data
             const isHighlighted = msg.id === email.id
             return (
               <div key={`in-${msg.id}`} className="flex justify-start">
@@ -497,10 +536,11 @@ function EmailSheet({
                         : 'border-border bg-card'
                     }`}
                   >
-                    <InboundBody bodyText={msg.bodyText} bodyHtml={msg.bodyHtml} />
+                    <InboundBody bodyText={msg.body} bodyHtml={msg.bodyHtml} />
                   </div>
                   <p className="mt-1 text-left text-xs text-muted-foreground pl-1">
-                    {msg.fromName || msg.fromEmail} · {formatDate(msg.receivedAt)}
+                    {msg.fromName || msg.fromEmail} · {formatDate(msg.date)}
+                    {msg.mailbox ? ` · ${msg.mailbox}` : ''}
                   </p>
                 </div>
               </div>
@@ -522,6 +562,10 @@ function EmailSheet({
             disabled={sending}
           />
           <div className="flex justify-end gap-2">
+            <Button variant="outline" size="sm" onClick={() => onMarkUnread(email.id)} disabled={sending}>
+              <IconMail className="size-4" />
+              Mark unread
+            </Button>
             <Button variant="outline" size="sm" onClick={onClose} disabled={sending}>
               Close
             </Button>
@@ -658,6 +702,7 @@ function InboxTable({
               <SortableHead label="Subject" sortKey="subject" current={sortKey} dir={sortDir} onSort={handleSort} />
               <SortableHead label="Category" sortKey="category" current={sortKey} dir={sortDir} onSort={handleSort} className="w-40" />
               <SortableHead label="Mailbox" sortKey="mailbox" current={sortKey} dir={sortDir} onSort={handleSort} />
+              <SortableHead label="Campaign" sortKey="campaign" current={sortKey} dir={sortDir} onSort={handleSort} />
               <SortableHead
                 label={showLastInteraction ? 'Last interaction' : 'Received'}
                 sortKey="date"
@@ -689,8 +734,17 @@ function InboxTable({
                     <p className="text-muted-foreground text-xs">{row.fromEmail}</p>
                   )}
                 </TableCell>
-                <TableCell className="max-w-72 truncate text-sm">
-                  {row.subject || <span className="text-muted-foreground/40">(no subject)</span>}
+                <TableCell className="max-w-72 text-sm">
+                  <div className="flex items-center gap-2">
+                    <span className="truncate">
+                      {row.subject || <span className="text-muted-foreground/40">(no subject)</span>}
+                    </span>
+                    {row.isBounce && (
+                      <Badge variant="destructive" className="font-normal">
+                        Bounce
+                      </Badge>
+                    )}
+                  </div>
                 </TableCell>
                 <TableCell>
                   <CategoryPicker
@@ -702,6 +756,15 @@ function InboxTable({
                   {row.connectionLabel ? (
                     <Badge variant="secondary" className="text-xs font-normal">
                       {row.connectionLabel}
+                    </Badge>
+                  ) : (
+                    <span className="text-muted-foreground/40 text-sm">—</span>
+                  )}
+                </TableCell>
+                <TableCell>
+                  {row.campaignName ? (
+                    <Badge variant="outline" className="text-xs font-normal">
+                      {row.campaignName}
                     </Badge>
                   ) : (
                     <span className="text-muted-foreground/40 text-sm">—</span>
@@ -739,30 +802,99 @@ export function InboxView({
   const [showKeywordsDialog, setShowKeywordsDialog] = useState(false)
   const [refreshing, startRefresh] = useTransition()
   const [localEmails, setLocalEmails] = useState<InboundRow[]>(emails)
+  const [mailboxFilter, setMailboxFilter] = useState(ALL)
+  const [campaignFilter, setCampaignFilter] = useState(ALL)
+  const [labelFilter, setLabelFilter] = useState(ALL)
+  const [unreadOnly, setUnreadOnly] = useState(false)
+  const [repliesOnly, setRepliesOnly] = useState(false)
+  const forcedUnread = useRef(new Set<number>())
 
+  const mailboxes = useMemo(
+    () => buildOptions(localEmails.map((e) => [e.connectionId, e.connectionLabel])),
+    [localEmails],
+  )
+  const campaignOptions = useMemo(
+    () => buildOptions(localEmails.map((e) => [e.campaignId, e.campaignName])),
+    [localEmails],
+  )
+
+  const scoped = useMemo(
+    () =>
+      localEmails.filter(
+        (e) =>
+          (mailboxFilter === ALL || e.connectionId === Number(mailboxFilter)) &&
+          (campaignFilter === ALL || e.campaignId === Number(campaignFilter)) &&
+          (labelFilter === ALL || e.category === labelFilter) &&
+          (!unreadOnly || !e.isRead) &&
+          (!repliesOnly || (e.leadId != null && !e.isAutoReply)),
+      ),
+    [localEmails, mailboxFilter, campaignFilter, labelFilter, unreadOnly, repliesOnly],
+  )
+
+  // Bounce notifications live with the filtered mail, not in the inbox.
   const inbox = useMemo(
-    () => filterRows(localEmails.filter((e) => !e.isFiltered), search),
-    [localEmails, search],
+    () => filterRows(scoped.filter((e) => !e.isFiltered && !e.isBounce), search),
+    [scoped, search],
   )
   const interested = useMemo(
-    () => filterRows(localEmails.filter((e) => !e.isFiltered && e.category === 'interested'), search),
-    [localEmails, search],
+    () =>
+      filterRows(
+        scoped.filter((e) => !e.isFiltered && !e.isBounce && e.category === 'interested'),
+        search,
+      ),
+    [scoped, search],
   )
   const filtered = useMemo(
-    () => filterRows(localEmails.filter((e) => e.isFiltered), search),
-    [localEmails, search],
+    () => filterRows(scoped.filter((e) => e.isFiltered || e.isBounce), search),
+    [scoped, search],
   )
 
-  const unreadCount = localEmails.filter((e) => !e.isFiltered && !e.isRead).length
+  const unreadCount = localEmails.filter((e) => !e.isFiltered && !e.isBounce && !e.isRead).length
 
   function handleRowClick(row: InboundRow) {
     setSelectedEmail(row)
+    forcedUnread.current.delete(row.id)
+
+    // Opening a conversation marks every email in it as read. Mirrors the
+    // server's idea of a thread (same lead, else same sender) over the loaded rows.
+    const hasUnread = localEmails.some(
+      (e) =>
+        !e.isRead &&
+        (e.id === row.id ||
+          (!e.isBounce &&
+            (row.leadId != null
+              ? e.leadId === row.leadId
+              : e.fromEmail.toLowerCase() === row.fromEmail.toLowerCase()))),
+    )
+    if (!hasUnread) return
+
     if (!row.isRead) {
       setLocalEmails((prev) =>
         prev.map((e) => (e.id === row.id ? { ...e, isRead: true } : e)),
       )
-      markRead(row.id).catch(() => {})
     }
+    markThreadRead(row.id)
+      .then((ids) => {
+        const read = new Set(ids)
+        setLocalEmails((prev) =>
+          prev.map((e) =>
+            read.has(e.id) && !forcedUnread.current.has(e.id) ? { ...e, isRead: true } : e,
+          ),
+        )
+      })
+      .catch(() => {})
+  }
+
+  function handleMarkUnread(id: number) {
+    // Stops a markThreadRead still in flight from flipping the row back to read
+    forcedUnread.current.add(id)
+    setLocalEmails((prev) =>
+      prev.map((e) => (e.id === id ? { ...e, isRead: false } : e)),
+    )
+    setSelectedEmail(null)
+    markUnread(id).catch(() => {
+      toast.error('Failed to mark as unread')
+    })
   }
 
   function handleCategoryChange(id: number, cat: CategoryKey) {
@@ -773,6 +905,16 @@ export function InboxView({
       setSelectedEmail((prev) => prev ? { ...prev, category: cat } : prev)
     }
     categorizeEmail(id, cat).catch(() => {
+      toast.error('Failed to save category')
+    })
+  }
+
+  function handleLeadLabelChange(leadId: number, cat: CategoryKey) {
+    setLocalEmails((prev) =>
+      prev.map((e) => (e.leadId === leadId ? { ...e, category: cat } : e)),
+    )
+    setSelectedEmail((prev) => prev && prev.leadId === leadId ? { ...prev, category: cat } : prev)
+    setLeadLabel(leadId, cat).catch(() => {
       toast.error('Failed to save category')
     })
   }
@@ -831,6 +973,61 @@ export function InboxView({
           value={search}
           onChange={(e) => setSearch(e.target.value)}
         />
+      </div>
+
+      {/* Filters */}
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+        <Select value={mailboxFilter} onValueChange={setMailboxFilter}>
+          <SelectTrigger size="sm" className="w-44">
+            <SelectValue placeholder="Mailbox" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value={ALL}>All mailboxes</SelectItem>
+            {mailboxes.map((m) => (
+              <SelectItem key={m.id} value={String(m.id)}>
+                {m.label}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <Select value={campaignFilter} onValueChange={setCampaignFilter}>
+          <SelectTrigger size="sm" className="w-44">
+            <SelectValue placeholder="Campaign" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value={ALL}>All campaigns</SelectItem>
+            {campaignOptions.map((c) => (
+              <SelectItem key={c.id} value={String(c.id)}>
+                {c.label}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <Select value={labelFilter} onValueChange={setLabelFilter}>
+          <SelectTrigger size="sm" className="w-44">
+            <SelectValue placeholder="Label" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value={ALL}>All labels</SelectItem>
+            {CATEGORIES.map((cat) => (
+              <SelectItem key={cat.value} value={cat.value}>
+                {cat.label}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <div className="flex items-center gap-2">
+          <Switch id="inbox-unread-only" checked={unreadOnly} onCheckedChange={setUnreadOnly} />
+          <Label htmlFor="inbox-unread-only" className="cursor-pointer font-normal">
+            Unread only
+          </Label>
+        </div>
+        <div className="flex items-center gap-2">
+          <Switch id="inbox-replies-only" checked={repliesOnly} onCheckedChange={setRepliesOnly} />
+          <Label htmlFor="inbox-replies-only" className="cursor-pointer font-normal">
+            Replies only
+          </Label>
+        </div>
       </div>
 
       <Tabs defaultValue="inbox">
@@ -897,9 +1094,6 @@ export function InboxView({
       {selectedEmail && (
         <EmailSheet
           email={selectedEmail}
-          thread={localEmails
-            .filter((e) => e.fromEmail === selectedEmail.fromEmail)
-            .sort((a, b) => (a.receivedAt ?? '').localeCompare(b.receivedAt ?? ''))}
           onClose={() => setSelectedEmail(null)}
           onReplied={(repliedAt) => {
             // Keep the sheet open — just update repliedAt/isRead in the row
@@ -910,6 +1104,8 @@ export function InboxView({
             )
           }}
           onCategoryChange={handleCategoryChange}
+          onLeadLabelChange={handleLeadLabelChange}
+          onMarkUnread={handleMarkUnread}
         />
       )}
 

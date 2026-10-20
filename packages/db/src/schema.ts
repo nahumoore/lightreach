@@ -243,6 +243,15 @@ export const inboundEmails = sqliteTable(
     connectionId: integer("connection_id").references(() => connections.id, {
       onDelete: "cascade",
     }),
+    /** Lead this email was matched to when it was fetched (threading headers,
+     *  then sender address). Null for mail that isn't from a lead we contacted. */
+    leadId: integer("lead_id").references(() => leads.id, {
+      onDelete: "set null",
+    }),
+    /** Campaign of the outbound message that matched `leadId` */
+    campaignId: integer("campaign_id").references(() => campaigns.id, {
+      onDelete: "set null",
+    }),
     /** IMAP UID within the INBOX folder — used for deduplication per mailbox */
     uid: integer("uid"),
     /** RFC822 Message-ID header */
@@ -261,6 +270,9 @@ export const inboundEmails = sqliteTable(
     isFiltered: integer("is_filtered", { mode: "boolean" }).notNull().default(false),
     /** true when this message looks like a DSN/bounce notification (mailer-daemon, NDR subject, etc.) */
     isBounce: integer("is_bounce", { mode: "boolean" }).notNull().default(false),
+    /** true when the subject looks like an out-of-office / auto-responder reply — still linked
+     *  to its lead for the thread view, but not counted as a real reply */
+    isAutoReply: integer("is_auto_reply", { mode: "boolean" }).notNull().default(false),
     /** true when the same Message-ID was already seen on another connection (e.g. a
      *  delegated/shared mailbox polled through two separate connections) — hidden
      *  from the inbox UI and skipped for classification, but kept for uid tracking. */
@@ -277,6 +289,7 @@ export const inboundEmails = sqliteTable(
   },
   (table) => [
     uniqueIndex("inbound_email_uid_unique").on(table.connectionId, table.uid),
+    index("inbound_email_lead_idx").on(table.leadId),
   ],
 );
 

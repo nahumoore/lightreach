@@ -1,12 +1,14 @@
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { z } from 'zod'
 import { db, inboundEmails } from '@workspace/db'
-import { eq, and } from 'drizzle-orm'
+import { eq, and, desc, isNotNull } from 'drizzle-orm'
 import {
   markRead,
   markUnread,
+  markThreadRead,
   replyToEmail,
   categorizeEmail,
+  setLeadLabel,
   triggerFetch,
   getFullThread,
 } from '@/app/(dashboard)/inbox/actions'
@@ -24,10 +26,17 @@ const categoryEnum = z.enum([
 export function registerInboxTools(server: McpServer) {
   server.tool(
     'list_inbound_emails',
-    'List received inbound emails, optionally filtered by category or read status',
+    'List received inbound emails, newest first, optionally filtered by mailbox, campaign, lead, category, read status or replies only',
     {
+      connectionId: z.number().int().positive().optional().describe('Filter by the mailbox that received it'),
+      campaignId: z.number().int().positive().optional().describe('Filter by the campaign the sender was contacted through'),
+      leadId: z.number().int().positive().optional().describe('Filter by the lead the email was matched to'),
       category: categoryEnum.optional().describe('Filter by category'),
       isRead: z.boolean().optional().describe('Filter by read status (true = read, false = unread)'),
+      repliesOnly: z
+        .boolean()
+        .default(false)
+        .describe('Only real replies: emails matched to a lead we contacted, excluding out-of-office auto-replies (default false)'),
       limit: z
         .number()
         .int()
@@ -35,19 +44,26 @@ export function registerInboxTools(server: McpServer) {
         .max(500)
         .default(50)
         .describe('Max records to return (default 50)'),
+      offset: z.number().int().min(0).default(0).describe('Records to skip, for paging (default 0)'),
     },
-    async ({ category, isRead, limit }) => {
+    async ({ connectionId, campaignId, leadId, category, isRead, repliesOnly, limit, offset }) => {
       const rows = await db
         .select()
         .from(inboundEmails)
         .where(
           and(
             eq(inboundEmails.isDuplicate, false),
+            connectionId !== undefined ? eq(inboundEmails.connectionId, connectionId) : undefined,
+            campaignId !== undefined ? eq(inboundEmails.campaignId, campaignId) : undefined,
+            leadId !== undefined ? eq(inboundEmails.leadId, leadId) : undefined,
             category !== undefined ? eq(inboundEmails.category, category) : undefined,
             isRead !== undefined ? eq(inboundEmails.isRead, isRead) : undefined,
+            repliesOnly ? and(isNotNull(inboundEmails.leadId), eq(inboundEmails.isAutoReply, false)) : undefined,
           ),
         )
+        .orderBy(desc(inboundEmails.receivedAt), desc(inboundEmails.id))
         .limit(limit)
+        .offset(offset)
       return ok(rows)
     },
   )
@@ -65,11 +81,12 @@ export function registerInboxTools(server: McpServer) {
 
   server.tool(
     'get_thread',
-    'Get the full two-way conversation history (inbound replies and outbound sends, chronologically ordered) for a thread linked to an inbound email',
+    'Get the full two-way conversation history (inbound replies and outbound sends, chronologically ordered) for the lead an inbound email is linked to',
     { inboundId: z.number().int().positive().describe('Inbound email ID') },
     async ({ inboundId }) => {
+      // The HTML body is for the web UI; text is enough (and much smaller) for tool callers.
       const msgs = await getFullThread(inboundId)
-      return ok(msgs)
+      return ok(msgs.map((m) => ({ ...m, bodyHtml: undefined })))
     },
   )
 
@@ -104,6 +121,23 @@ export function registerInboxTools(server: McpServer) {
   )
 
   server.tool(
+    'set_lead_label',
+    'Set the category label on every inbound email from a lead (use categorize_email for a single email)',
+    {
+      leadId: z.number().int().positive().describe('Lead ID'),
+      category: categoryEnum.describe('Category to assign'),
+    },
+    async ({ leadId, category }) => {
+      try {
+        const updated = await setLeadLabel(leadId, category)
+        return updated > 0 ? ok({ updated, leadId, category }) : err('No inbound emails found for that lead')
+      } catch (e) {
+        return err(e instanceof Error ? e.message : String(e))
+      }
+    },
+  )
+
+  server.tool(
     'mark_read',
     'Mark an inbound email as read',
     { id: z.number().int().positive().describe('Inbound email ID') },
@@ -125,6 +159,20 @@ export function registerInboxTools(server: McpServer) {
       try {
         await markUnread(id)
         return ok({ updated: true })
+      } catch (e) {
+        return err(e instanceof Error ? e.message : String(e))
+      }
+    },
+  )
+
+  server.tool(
+    'mark_thread_read',
+    'Mark every inbound email in the same conversation as an inbound email as read',
+    { inboundId: z.number().int().positive().describe('Inbound email ID') },
+    async ({ inboundId }) => {
+      try {
+        const ids = await markThreadRead(inboundId)
+        return ids.length > 0 ? ok({ updated: ids.length, ids }) : err('Inbound email not found')
       } catch (e) {
         return err(e instanceof Error ? e.message : String(e))
       }

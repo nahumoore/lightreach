@@ -164,7 +164,7 @@ const TOOL_GROUPS: { group: string; tools: ToolEntry[] }[] = [
       {
         name: 'list_inbound_emails',
         description: 'List received emails (filterable)',
-        params: 'category?, isRead?, limit?',
+        params: 'connectionId?, campaignId?, leadId?, category?, isRead?, repliesOnly?, limit?, offset?',
       },
       {
         name: 'get_inbound_email',
@@ -173,7 +173,7 @@ const TOOL_GROUPS: { group: string; tools: ToolEntry[] }[] = [
       },
       {
         name: 'get_thread',
-        description: 'Get outbound history for a conversation',
+        description: 'Get the full two-way conversation for a lead',
         params: 'inboundId',
       },
       {
@@ -186,8 +186,18 @@ const TOOL_GROUPS: { group: string; tools: ToolEntry[] }[] = [
         description: 'Set category on an inbound email',
         params: 'id, category',
       },
+      {
+        name: 'set_lead_label',
+        description: 'Set category on all emails from a lead',
+        params: 'leadId, category',
+      },
       { name: 'mark_read', description: 'Mark email as read', params: 'id' },
       { name: 'mark_unread', description: 'Mark email as unread', params: 'id' },
+      {
+        name: 'mark_thread_read',
+        description: 'Mark every email in a conversation as read',
+        params: 'inboundId',
+      },
       { name: 'trigger_fetch', description: 'Manually poll all IMAP inboxes', params: '—' },
     ],
   },

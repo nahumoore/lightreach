@@ -1,6 +1,6 @@
 'use server'
 import { db, inboundEmails, appSettings, connections, messages, leads, lists } from '@workspace/db'
-import { eq, and, sql } from 'drizzle-orm'
+import { eq, and, or, sql } from 'drizzle-orm'
 import { revalidatePath } from 'next/cache'
 import { decrypt } from '@workspace/core/crypto'
 import { sendMail, buildMessageId } from '@workspace/core/email/transport'
@@ -21,6 +21,23 @@ export async function markRead(id: number) {
 export async function markUnread(id: number) {
   await db.update(inboundEmails).set({ isRead: false }).where(eq(inboundEmails.id, id))
   revalidatePath('/inbox')
+}
+
+/**
+ * Marks every inbound email in the conversation as read and returns their ids,
+ * so the caller can update its own copy. Returns [] if the email doesn't exist.
+ */
+export async function markThreadRead(inboundId: number): Promise<number[]> {
+  const inbound = await getThreadAnchor(inboundId)
+  if (!inbound) return []
+
+  const updated = await db
+    .update(inboundEmails)
+    .set({ isRead: true })
+    .where(threadInboundFilter(inbound))
+    .returning({ id: inboundEmails.id })
+  revalidatePath('/inbox')
+  return updated.map((r) => r.id)
 }
 
 export async function saveFilteredKeywords(keywords: string) {
@@ -164,7 +181,7 @@ export async function replyToEmail(
     return { ok: false, error: 'Failed to decrypt mailbox credentials' }
   }
 
-  const subject = inbound.subject.startsWith('Re:')
+  const subject = /^\s*re:/i.test(inbound.subject)
     ? inbound.subject
     : `Re: ${inbound.subject}`
 
@@ -199,15 +216,18 @@ export async function replyToEmail(
     )
 
     // Persist the reply as a messages row so it shows in the thread view.
+    // Prefer the lead the poller linked to this email; otherwise resolve it now.
     // If the sender is not yet a lead, auto-create them in the "Inbox Replies"
     // list so the reply is always stored and visible in the conversation thread.
-    const thread = await resolveThreadLead({
-      inReplyTo: inbound.inReplyTo,
-      references: inbound.references,
-      fromEmail: inbound.fromEmail,
-      subject: inbound.subject,
-      connectionId: inbound.connectionId,
-    })
+    const thread = inbound.leadId != null
+      ? { leadId: inbound.leadId, campaignId: inbound.campaignId }
+      : await resolveThreadLead({
+          inReplyTo: inbound.inReplyTo,
+          references: inbound.references,
+          fromEmail: inbound.fromEmail,
+          subject: inbound.subject,
+          connectionId: inbound.connectionId,
+        })
     const leadId = thread?.leadId ?? await findOrCreateLeadFromInbound({
       fromEmail: inbound.fromEmail,
       fromName: inbound.fromName,
@@ -237,6 +257,13 @@ export async function categorizeEmail(id: number, category: string) {
   revalidatePath('/inbox')
 }
 
+/** Sets the label on every inbound email linked to the lead. Returns how many rows changed. */
+export async function setLeadLabel(leadId: number, category: string): Promise<number> {
+  const result = await db.update(inboundEmails).set({ category }).where(eq(inboundEmails.leadId, leadId))
+  revalidatePath('/inbox')
+  return result.changes
+}
+
 export async function triggerFetch(): Promise<{ ok: boolean; error?: string }> {
   try {
     await pollAllInboxes()
@@ -247,90 +274,29 @@ export async function triggerFetch(): Promise<{ ok: boolean; error?: string }> {
   }
 }
 
-export type OutboundMessage = {
-  id: number
-  subject: string | null
-  body: string | null
-  sentAt: string | null
-  fromEmail: string | null
-}
-
-/**
- * Fetch all sent outbound messages for the conversation thread.
- *
- * Resolves the thread via RFC822 headers (inReplyTo / references → messages.messageId)
- * with a case-insensitive email fallback — this is the reliable path that the inbox
- * poller already uses for bounce/reply classification.
- */
-export async function getOutboundMessages(inboundId: number): Promise<OutboundMessage[]> {
-  const [inbound] = await db
-    .select({
-      inReplyTo: inboundEmails.inReplyTo,
-      references: inboundEmails.references,
-      fromEmail: inboundEmails.fromEmail,
-      subject: inboundEmails.subject,
-      connectionId: inboundEmails.connectionId,
-    })
-    .from(inboundEmails)
-    .where(eq(inboundEmails.id, inboundId))
-
-  if (!inbound) return []
-
-  const thread = await resolveThreadLead(inbound)
-  if (!thread) return []
-
-  const rows = await db
-    .select({
-      id: messages.id,
-      subject: messages.renderedSubject,
-      body: messages.renderedBody,
-      sentAt: messages.sentAt,
-      fromEmail: connections.fromEmail,
-    })
-    .from(messages)
-    .leftJoin(connections, eq(messages.connectionId, connections.id))
-    .where(and(eq(messages.status, 'sent'), eq(messages.leadId, thread.leadId)))
-    .orderBy(messages.sentAt)
-
-  return rows.map((r) => {
-    let sentAt: string | null = null
-    if (r.sentAt) {
-      sentAt = r.sentAt instanceof Date
-        ? r.sentAt.toISOString()
-        : new Date((r.sentAt as unknown as number) * 1000).toISOString()
-    }
-    return {
-      id: r.id,
-      subject: r.subject ?? null,
-      body: r.body ?? null,
-      sentAt,
-      fromEmail: r.fromEmail ?? null,
-    }
-  })
-}
-
 export type ThreadMessage = {
   id: number
   direction: 'inbound' | 'outbound'
   subject: string | null
+  /** Plain text for inbound mail, rendered HTML for outbound */
   body: string | null
+  /** Inbound only */
+  bodyHtml: string | null
   date: string | null
+  fromName: string | null
   fromEmail: string | null
+  /** Label of the mailbox that received (inbound) or sent (outbound) the message */
+  mailbox: string | null
+  /** Inbound only */
+  isRead: boolean | null
 }
 
-/**
- * Full two-way conversation for an inbound email: the resolved lead's outbound
- * sends merged with all of their inbound replies, in chronological order.
- *
- * getOutboundMessages() above only returns the outbound half, unordered — the
- * /inbox UI works around that by separately fetching inbound rows and merging
- * client-side (see inbox-view.tsx's `conversation` merge). MCP callers (the
- * get_thread tool) had no equivalent, so they only ever saw one-sided,
- * out-of-order history. This gives them the same merged view the UI shows.
- */
-export async function getFullThread(inboundId: number): Promise<ThreadMessage[]> {
+/** The fields of an inbound email needed to find the rest of its conversation. */
+async function getThreadAnchor(inboundId: number) {
   const [inbound] = await db
     .select({
+      id: inboundEmails.id,
+      leadId: inboundEmails.leadId,
       inReplyTo: inboundEmails.inReplyTo,
       references: inboundEmails.references,
       fromEmail: inboundEmails.fromEmail,
@@ -339,14 +305,44 @@ export async function getFullThread(inboundId: number): Promise<ThreadMessage[]>
     })
     .from(inboundEmails)
     .where(eq(inboundEmails.id, inboundId))
+  return inbound
+}
 
+/**
+ * The inbound emails that make up one conversation. When the poller linked the
+ * email to a lead, that is every email linked to the same lead (so replies from
+ * a colleague on the same domain are included). Otherwise it falls back to
+ * every email from the same sender address. The email itself is always
+ * included, even if it is a bounce.
+ */
+function threadInboundFilter(inbound: { id: number; leadId: number | null; fromEmail: string }) {
+  const sameConversation =
+    inbound.leadId != null
+      ? eq(inboundEmails.leadId, inbound.leadId)
+      : eq(sql`lower(${inboundEmails.fromEmail})`, inbound.fromEmail.toLowerCase())
+
+  return or(
+    eq(inboundEmails.id, inbound.id),
+    and(sameConversation, eq(inboundEmails.isDuplicate, false), eq(inboundEmails.isBounce, false)),
+  )
+}
+
+/**
+ * Full two-way conversation for an inbound email: the lead's outbound sends
+ * merged with all of their inbound replies, in chronological order. Used by
+ * the /inbox thread panel and the MCP get_thread tool.
+ *
+ * The lead comes from the email's own link when it has one, otherwise from
+ * threading headers, sender address, then (display only) the subject.
+ */
+export async function getFullThread(inboundId: number): Promise<ThreadMessage[]> {
+  const inbound = await getThreadAnchor(inboundId)
   if (!inbound) return []
 
-  const thread = await resolveThreadLead(inbound)
-  const lowerFromEmail = inbound.fromEmail.toLowerCase()
+  const leadId = inbound.leadId ?? (await resolveThreadLead(inbound))?.leadId
 
   const [outboundRows, inboundRows] = await Promise.all([
-    thread
+    leadId != null
       ? db
           .select({
             id: messages.id,
@@ -354,10 +350,11 @@ export async function getFullThread(inboundId: number): Promise<ThreadMessage[]>
             body: messages.renderedBody,
             sentAt: messages.sentAt,
             fromEmail: connections.fromEmail,
+            mailbox: connections.label,
           })
           .from(messages)
           .leftJoin(connections, eq(messages.connectionId, connections.id))
-          .where(and(eq(messages.status, 'sent'), eq(messages.leadId, thread.leadId)))
+          .where(and(eq(messages.status, 'sent'), eq(messages.leadId, leadId)))
           .orderBy(messages.sentAt)
       : Promise.resolve([]),
     db
@@ -365,17 +362,16 @@ export async function getFullThread(inboundId: number): Promise<ThreadMessage[]>
         id: inboundEmails.id,
         subject: inboundEmails.subject,
         body: inboundEmails.bodyText,
+        bodyHtml: inboundEmails.bodyHtml,
         receivedAt: inboundEmails.receivedAt,
+        fromName: inboundEmails.fromName,
         fromEmail: inboundEmails.fromEmail,
+        mailbox: connections.label,
+        isRead: inboundEmails.isRead,
       })
       .from(inboundEmails)
-      .where(
-        and(
-          eq(sql`lower(${inboundEmails.fromEmail})`, lowerFromEmail),
-          eq(inboundEmails.isDuplicate, false),
-          eq(inboundEmails.isBounce, false),
-        ),
-      )
+      .leftJoin(connections, eq(inboundEmails.connectionId, connections.id))
+      .where(threadInboundFilter(inbound))
       .orderBy(inboundEmails.receivedAt),
   ])
 
@@ -390,16 +386,24 @@ export async function getFullThread(inboundId: number): Promise<ThreadMessage[]>
       direction: 'outbound' as const,
       subject: r.subject ?? null,
       body: r.body ?? null,
+      bodyHtml: null,
       date: toIso(r.sentAt),
+      fromName: null,
       fromEmail: r.fromEmail ?? null,
+      mailbox: r.mailbox ?? null,
+      isRead: null,
     })),
     ...inboundRows.map((r) => ({
       id: r.id,
       direction: 'inbound' as const,
       subject: r.subject ?? null,
       body: r.body ?? null,
+      bodyHtml: r.bodyHtml ?? null,
       date: toIso(r.receivedAt),
+      fromName: r.fromName || null,
       fromEmail: r.fromEmail ?? null,
+      mailbox: r.mailbox ?? null,
+      isRead: r.isRead,
     })),
   ]
 

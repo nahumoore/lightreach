@@ -1,4 +1,4 @@
-import { db, inboundEmails, connections, appSettings } from '@workspace/db'
+import { db, inboundEmails, connections, campaigns, appSettings } from '@workspace/db'
 import { eq, desc } from 'drizzle-orm'
 import { InboxView } from './inbox-view'
 
@@ -11,12 +11,17 @@ export type InboundRow = {
   bodyText: string | null
   bodyHtml: string | null
   isFiltered: boolean
+  isBounce: boolean
+  isAutoReply: boolean
   isRead: boolean
   category: string
   receivedAt: string | null
   connectionId: number | null
   connectionLabel: string | null
   connectionFromEmail: string | null
+  leadId: number | null
+  campaignId: number | null
+  campaignName: string | null
   messageId: string | null
   inReplyTo: string | null
   references: string | null
@@ -35,12 +40,17 @@ export default async function InboxPage() {
         bodyText: inboundEmails.bodyText,
         bodyHtml: inboundEmails.bodyHtml,
         isFiltered: inboundEmails.isFiltered,
+        isBounce: inboundEmails.isBounce,
+        isAutoReply: inboundEmails.isAutoReply,
         isRead: inboundEmails.isRead,
         category: inboundEmails.category,
         receivedAt: inboundEmails.receivedAt,
         connectionId: inboundEmails.connectionId,
         connectionLabel: connections.label,
         connectionFromEmail: connections.fromEmail,
+        leadId: inboundEmails.leadId,
+        campaignId: inboundEmails.campaignId,
+        campaignName: campaigns.name,
         messageId: inboundEmails.messageId,
         inReplyTo: inboundEmails.inReplyTo,
         references: inboundEmails.references,
@@ -48,6 +58,7 @@ export default async function InboxPage() {
       })
       .from(inboundEmails)
       .leftJoin(connections, eq(inboundEmails.connectionId, connections.id))
+      .leftJoin(campaigns, eq(inboundEmails.campaignId, campaigns.id))
       .where(eq(inboundEmails.isDuplicate, false))
       .orderBy(desc(inboundEmails.receivedAt))
       .limit(500),

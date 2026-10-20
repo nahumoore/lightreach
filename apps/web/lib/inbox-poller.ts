@@ -3,7 +3,7 @@ import { connections, inboundEmails, appSettings, messages, leads } from '@works
 import { decrypt } from '@workspace/core/crypto'
 import { resolveImapConfig, fetchRecent } from '@workspace/core/email/imap'
 import type { ParsedEmail } from '@workspace/core/email/imap'
-import { eq, and, max, inArray, sql, isNotNull, desc } from 'drizzle-orm'
+import { eq, and, max, inArray, sql, isNotNull, isNull, desc } from 'drizzle-orm'
 
 const TICK_MS = 120_000
 
@@ -24,9 +24,14 @@ export function startInboxPoller(): void {
     })
   }, TICK_MS)
 
-  pollAllInboxes().catch((err) => {
-    console.error('[Lightreach] Inbox poller startup error:', err)
-  })
+  backfillInboundLeadLinks()
+    .catch((err) => {
+      console.error('[Lightreach] Inbox lead backfill error:', err)
+    })
+    .then(() => pollAllInboxes())
+    .catch((err) => {
+      console.error('[Lightreach] Inbox poller startup error:', err)
+    })
 
   pollerHandle.unref()
 }
@@ -254,6 +259,7 @@ export async function matchLeadByEmail(fromEmail: string): Promise<LeadMatch | n
     .select({ leadId: messages.leadId, campaignId: messages.campaignId })
     .from(messages)
     .where(and(eq(messages.status, 'sent'), inArray(messages.leadId, leadIds)))
+    .orderBy(desc(messages.sentAt))
     .limit(1)
 
   if (sentMsg.length === 0) return null
@@ -312,43 +318,108 @@ async function handleBounce(email: ParsedEmail): Promise<void> {
   await markLeadStatus(match.leadId, 'bounced', 'DSN bounce')
 }
 
-async function classifyAndActOnInbound(email: ParsedEmail): Promise<void> {
-  if (isBounceEmail(email)) {
-    await handleBounce(email)
-    return
-  }
-
-  // Auto-responders are informational only — don't halt the sequence over them.
-  if (OUT_OF_OFFICE_SUBJECT_RE.test(email.subject)) return
-
-  // Header-threading match, cross-checked against the matched lead's own
-  // domain so a forwarded copy of our email replied to by an unrelated third
-  // party (or an auto-responder on an unrelated domain) doesn't count as a
-  // reply. Domain-level (not exact-address) comparison because replies
-  // routinely arrive from a different mailbox on the same domain — e.g. a
-  // shared team inbox where the reply comes from support@ instead of the
-  // hello@ address we originally emailed.
-  let match = await matchLeadByReferences(email.inReplyTo, email.references)
+/**
+ * Match an inbound email to the lead we contacted. Never uses the subject
+ * heuristic: the result is persisted on the inbound row and drives lead state,
+ * so only the two reliable signals count.
+ *
+ * Header-threading match, cross-checked against the matched lead's own
+ * domain so a forwarded copy of our email replied to by an unrelated third
+ * party (or an auto-responder on an unrelated domain) doesn't count as a
+ * reply. Domain-level (not exact-address) comparison because replies
+ * routinely arrive from a different mailbox on the same domain — e.g. a
+ * shared team inbox where the reply comes from support@ instead of the
+ * hello@ address we originally emailed.
+ *
+ * Falls back to a sender-email match for replies that stripped threading headers.
+ */
+async function matchInboundLead(email: {
+  inReplyTo: string | null
+  references: string | null
+  fromEmail: string
+}): Promise<LeadMatch | null> {
+  const match = await matchLeadByReferences(email.inReplyTo, email.references)
   if (match) {
     const [matchedLead] = await db.select({ email: leads.email }).from(leads).where(eq(leads.id, match.leadId))
-    if (!matchedLead || emailDomain(matchedLead.email) !== emailDomain(email.fromEmail)) {
-      match = null
-    }
+    if (matchedLead && emailDomain(matchedLead.email) === emailDomain(email.fromEmail)) return match
   }
 
-  // Fall back to a sender-email match for replies that stripped threading headers.
-  if (!match) {
-    match = await matchLeadByEmail(email.fromEmail)
+  return matchLeadByEmail(email.fromEmail)
+}
+
+/** Returns the lead the email belongs to (if any) so the caller can link the inbound row to it. */
+async function classifyAndActOnInbound(email: ParsedEmail): Promise<LeadMatch | null> {
+  // A bounce is deliverability noise, not a conversation: handleBounce may find
+  // the lead, but the notification is deliberately not linked to it, so it never
+  // shows up as a reply (or in that lead's thread).
+  if (isBounceEmail(email)) {
+    await handleBounce(email)
+    return null
   }
 
-  if (!match) return
+  const match = await matchInboundLead(email)
+  if (!match) return null
+
+  // Auto-responders are informational only — don't halt the sequence over them.
+  if (OUT_OF_OFFICE_SUBJECT_RE.test(email.subject)) return match
 
   if (isUnsubscribeReply(email.bodyText, email.subject)) {
     await markLeadStatus(match.leadId, 'unsubscribed', 'unsubscribe keyword in reply')
-    return
+    return match
   }
 
   await markLeadStatus(match.leadId, 'replied', 'reply detected')
+  return match
+}
+
+const LEAD_LINK_BACKFILL_KEY = 'inbound_lead_link_backfilled'
+
+/**
+ * One-time pass that links inbound rows fetched before `lead_id`/`campaign_id`
+ * existed. Only writes the link — lead status is left alone, since those
+ * replies were already acted on when they were first fetched.
+ */
+async function backfillInboundLeadLinks(): Promise<void> {
+  const [done] = await db
+    .select({ value: appSettings.value })
+    .from(appSettings)
+    .where(eq(appSettings.key, LEAD_LINK_BACKFILL_KEY))
+  if (done) return
+
+  const rows = await db
+    .select({
+      id: inboundEmails.id,
+      inReplyTo: inboundEmails.inReplyTo,
+      references: inboundEmails.references,
+      fromEmail: inboundEmails.fromEmail,
+      subject: inboundEmails.subject,
+    })
+    .from(inboundEmails)
+    .where(
+      and(
+        isNull(inboundEmails.leadId),
+        eq(inboundEmails.isBounce, false),
+        eq(inboundEmails.isDuplicate, false),
+      ),
+    )
+
+  let linked = 0
+  for (const row of rows) {
+    const match = await matchInboundLead(row)
+    if (!match) continue
+    await db
+      .update(inboundEmails)
+      .set({
+        leadId: match.leadId,
+        campaignId: match.campaignId,
+        isAutoReply: OUT_OF_OFFICE_SUBJECT_RE.test(row.subject),
+      })
+      .where(eq(inboundEmails.id, row.id))
+    linked++
+  }
+
+  await db.insert(appSettings).values({ key: LEAD_LINK_BACKFILL_KEY, value: '1' })
+  console.log(`[Lightreach] Inbox: linked ${linked} of ${rows.length} existing email(s) to leads`)
 }
 
 export async function pollAllInboxes(): Promise<void> {
@@ -431,6 +502,7 @@ async function runPoll(): Promise<void> {
             bodyHtml: email.bodyHtml,
             isFiltered: filtered,
             isBounce: bounce,
+            isAutoReply: OUT_OF_OFFICE_SUBJECT_RE.test(email.subject),
             isDuplicate: dupResolution.isDuplicate,
             receivedAt: email.receivedAt,
           })
@@ -439,7 +511,13 @@ async function runPoll(): Promise<void> {
         // Only classify newly inserted, non-duplicate emails — a duplicate was
         // already classified (bounce/reply/unsubscribe) when its first copy landed.
         if (inserted.changes > 0 && !dupResolution.isDuplicate) {
-          await classifyAndActOnInbound(email)
+          const match = await classifyAndActOnInbound(email)
+          if (match) {
+            await db
+              .update(inboundEmails)
+              .set({ leadId: match.leadId, campaignId: match.campaignId })
+              .where(and(eq(inboundEmails.connectionId, conn.id), eq(inboundEmails.uid, email.uid)))
+          }
         }
       }
 
