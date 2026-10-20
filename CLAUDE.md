@@ -17,7 +17,7 @@ services beyond your own SMTP mailboxes, and runs from a single `pnpm dev` comma
 | Section | What it does |
 |---|---|
 | **Dashboard** | Activity overview and send analytics. |
-| **Connections** | Add SMTP mailboxes (Gmail, Outlook, custom). Test, pause, track daily limits. Optional IMAP config per mailbox. |
+| **Connections** | Add SMTP mailboxes (Gmail, Outlook, custom). Test, pause, track daily limits. Optional IMAP config per mailbox. Optional mailbox-to-mailbox warmup with a daily ramp, spam rescue and replies. |
 | **Inbox / Emails** | Poll received mail across all IMAP mailboxes. Automatic reply and warmup detection. |
 | **Leads** | Upload CSVs with column-mapping wizard. Manage lists + individual leads. |
 | **Sequences** | Multi-step email sequences with configurable `delayDays` between steps. Write with `{spintax\|options}` and `{{variable\|fallback}}` placeholders. Live preview. |
@@ -56,8 +56,9 @@ lightreach/
 │   │   ├── src/crypto.ts       # AES-256-GCM encrypt/decrypt for SMTP secrets
 │   │   ├── src/csv.ts          # CSV parsing + header-mapping helpers
 │   │   ├── src/rotation.ts     # round-robin mailbox rotation
+│   │   ├── src/warmup.ts       # warmup ramp, pacing, recipient pick + email copy
 │   │   ├── src/email/transport.ts  # nodemailer transport builder + sendMail
-│   │   └── src/email/imap.ts       # imapflow IMAP polling + reply detection
+│   │   └── src/email/imap.ts       # imapflow IMAP polling + reply detection + warmup spam rescue
 │   ├── db/               # @workspace/db — Drizzle schema + client
 │   │   ├── src/schema.ts
 │   │   ├── src/client.ts
@@ -193,7 +194,7 @@ docker compose up -d
 
 | Table | Purpose |
 |---|---|
-| `connections` | SMTP/IMAP mailboxes: host, port, auth, daily limit |
+| `connections` | SMTP/IMAP mailboxes: host, port, auth, daily limit, warmup settings (`warmup*`) |
 | `lists` | Named lead lists |
 | `leads` | Individual contacts linked to a list |
 | `sequences` | Multi-step email sequences (replaced `templates`) |
@@ -201,7 +202,8 @@ docker compose up -d
 | `campaigns` | Pair sequence + list + mailboxes + schedule |
 | `campaign_connections` | Many-to-many: campaign ↔ connection (rotation set) |
 | `messages` | Per-lead send queue + delivery log |
-| `inbound_emails` | Received mail fetched via IMAP (replies, warmup) |
+| `inbound_emails` | Received mail fetched via IMAP (replies, warmup); `isWarmup` rows are hidden from the inbox |
+| `warmup_emails` | Mailbox-to-mailbox warmup sends and replies: Message-ID, status, where each landed (inbox/spam/missing) |
 | `app_settings` | Key-value store for app-level preferences |
 
 See `packages/db/src/schema.ts` for full column definitions.
@@ -210,8 +212,8 @@ See `packages/db/src/schema.ts` for full column definitions.
 
 ## In-Process Scheduler & Inbox Poller
 
-`apps/web/instrumentation.ts` boots two background jobs on the Node.js runtime.
-Both are **Node-only** — they will not run in Edge or serverless environments. For
+`apps/web/instrumentation.ts` boots three background jobs on the Node.js runtime.
+All are **Node-only** — they will not run in Edge or serverless environments. For
 production use, run the app as a persistent Node process (`pnpm build && pnpm start`),
 not on a serverless platform that spins down between requests.
 
@@ -226,6 +228,29 @@ not on a serverless platform that spins down between requests.
 **Inbox poller** (`lib/inbox-poller.ts`):
 Periodically fetches new mail via IMAP across all active connections with IMAP configured,
 stores them in `inbound_emails`, and marks any matching outbound `messages` as replied.
+Messages whose Message-ID / In-Reply-To / References match a `warmup_emails` row are
+stored with `isWarmup = true` and skipped for classification.
+
+**Warmup worker** (`lib/warmup.ts`), every 5 minutes:
+1. Eligible mailboxes = `active` + `warmupEnabled` + IMAP enabled. Fewer than two: nothing sends.
+2. Send step: daily target = `min(warmupMaxVolume, warmupStartVolume + warmupDailyIncrease * daysSinceStart)`,
+   paced through the day, at most one send per mailbox per tick, to the peer it mailed least recently.
+   The `warmup_emails` row is inserted before sending, so restarts never exceed the target.
+3. Receive step: one IMAP session per recipient. Find each pending warmup email in INBOX, then the
+   junk folder (moved to INBOX if found there), mark it read, record `landedIn`, and reply at
+   `warmupReplyRate` (never to a reply). Anything not found 24h after sending becomes `missing`,
+   whatever state its recipient is in.
+4. Failures go on the warmup row and on `connections.lastError` (prefixed `Warmup:`) only when that
+   field is empty or already holds a warmup error, so a campaign or IMAP error is never overwritten.
+   Warmup never touches `consecutiveFailures`, the scheduler, or the campaign daily limit.
+5. Failed sends count toward the daily target on purpose: a broken SMTP server gets at most one
+   attempt per slot per day instead of one every tick.
+6. Warmup mail stays in the recipient's real INBOX, marked read; only the Lightreach inbox hides it.
+7. Ticks and manual runs ("Run warmup now", `trigger_warmup`) share a DB lease (`app_settings`
+   key `warmup_lease`), so they never overlap. Background ticks mark rows stuck in `sending`
+   for over 10 minutes as `failed` (never resent). The ramp day counts local calendar days, the
+   same midnight boundary as "sent today". The lease is cleared when the worker starts, so a
+   restart mid-pass never leaves warmup blocked.
 
 ---
 

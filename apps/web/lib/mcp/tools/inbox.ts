@@ -43,6 +43,7 @@ export function registerInboxTools(server: McpServer) {
         .where(
           and(
             eq(inboundEmails.isDuplicate, false),
+            eq(inboundEmails.isWarmup, false),
             category !== undefined ? eq(inboundEmails.category, category) : undefined,
             isRead !== undefined ? eq(inboundEmails.isRead, isRead) : undefined,
           ),

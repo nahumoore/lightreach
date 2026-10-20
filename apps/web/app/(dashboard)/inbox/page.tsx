@@ -1,5 +1,5 @@
 import { db, inboundEmails, connections, appSettings } from '@workspace/db'
-import { eq, desc } from 'drizzle-orm'
+import { eq, and, desc } from 'drizzle-orm'
 import { InboxView } from './inbox-view'
 
 export type InboundRow = {
@@ -48,7 +48,7 @@ export default async function InboxPage() {
       })
       .from(inboundEmails)
       .leftJoin(connections, eq(inboundEmails.connectionId, connections.id))
-      .where(eq(inboundEmails.isDuplicate, false))
+      .where(and(eq(inboundEmails.isDuplicate, false), eq(inboundEmails.isWarmup, false)))
       .orderBy(desc(inboundEmails.receivedAt))
       .limit(500),
 

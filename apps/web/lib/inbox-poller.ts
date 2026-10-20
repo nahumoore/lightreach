@@ -4,6 +4,7 @@ import { decrypt } from '@workspace/core/crypto'
 import { resolveImapConfig, fetchRecent } from '@workspace/core/email/imap'
 import type { ParsedEmail } from '@workspace/core/email/imap'
 import { eq, and, max, inArray, sql, isNotNull, desc } from 'drizzle-orm'
+import { isWarmupMessage } from '@/lib/warmup'
 
 const TICK_MS = 120_000
 
@@ -414,6 +415,9 @@ async function runPoll(): Promise<void> {
         const dupResolution = email.messageId
           ? await resolveDuplicateOnInsert(email.messageId, email.toEmail, conn.fromEmail)
           : { isDuplicate: false }
+        // Mailbox-to-mailbox warmup traffic is still inserted (it advances the UID
+        // cursor) but hidden from the inbox and never classified as a lead reply.
+        const warmup = await isWarmupMessage(email)
 
         const inserted = await db
           .insert(inboundEmails)
@@ -432,13 +436,14 @@ async function runPoll(): Promise<void> {
             isFiltered: filtered,
             isBounce: bounce,
             isDuplicate: dupResolution.isDuplicate,
+            isWarmup: warmup,
             receivedAt: email.receivedAt,
           })
           .onConflictDoNothing()
 
         // Only classify newly inserted, non-duplicate emails — a duplicate was
         // already classified (bounce/reply/unsubscribe) when its first copy landed.
-        if (inserted.changes > 0 && !dupResolution.isDuplicate) {
+        if (inserted.changes > 0 && !dupResolution.isDuplicate && !warmup) {
           await classifyAndActOnInbound(email)
         }
       }

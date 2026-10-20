@@ -1,5 +1,5 @@
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
-import { sql, eq } from 'drizzle-orm'
+import { sql, eq, and } from 'drizzle-orm'
 import {
   db,
   lists,
@@ -52,8 +52,8 @@ export function registerStatsTools(server: McpServer) {
         cntWhere(messages, eq(messages.status, 'sent')),
         cntWhere(messages, eq(messages.status, 'queued')),
         cntWhere(messages, eq(messages.status, 'failed')),
-        cnt(inboundEmails),
-        cntWhere(inboundEmails, eq(inboundEmails.isRead, false)),
+        cntWhere(inboundEmails, eq(inboundEmails.isWarmup, false)),
+        cntWhere(inboundEmails, and(eq(inboundEmails.isRead, false), eq(inboundEmails.isWarmup, false))),
       ])
 
       return ok({

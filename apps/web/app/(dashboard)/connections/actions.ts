@@ -5,6 +5,7 @@ import { revalidatePath } from 'next/cache'
 import { encrypt, decrypt } from '@workspace/core/crypto'
 import { verifyConnection, sendMail } from '@workspace/core/email/transport'
 import { checkDomainAuth, domainFromEmail } from '@workspace/core/email/dns'
+import { runWarmupNow } from '@/lib/warmup'
 
 type DnsRecords = {
   spf: boolean
@@ -206,4 +207,66 @@ export async function testConnectionDraft(data: {
   smtpPass: string
 }): Promise<{ ok: boolean; error?: string }> {
   return verifyConnection(data)
+}
+
+export type WarmupSettingsInput = {
+  enabled?: boolean
+  startVolume?: number
+  dailyIncrease?: number
+  maxVolume?: number
+  replyRate?: number
+}
+
+function checkWarmupNumber(name: string, value: number | undefined, min: number, max: number) {
+  if (value === undefined) return
+  if (!Number.isInteger(value) || value < min || value > max) {
+    throw new Error(`${name} must be a whole number between ${min} and ${max}`)
+  }
+}
+
+/** Partial update of a mailbox's warmup settings. Switching warmup on restarts the ramp. */
+export async function updateWarmupSettings(id: number, data: WarmupSettingsInput) {
+  checkWarmupNumber('Start volume', data.startVolume, 1, 500)
+  checkWarmupNumber('Daily increase', data.dailyIncrease, 0, 500)
+  checkWarmupNumber('Max volume', data.maxVolume, 1, 500)
+  checkWarmupNumber('Reply rate', data.replyRate, 0, 100)
+
+  const [row] = await db
+    .select({ warmupEnabled: connections.warmupEnabled })
+    .from(connections)
+    .where(eq(connections.id, id))
+  if (!row) throw new Error('Connection not found')
+
+  const patch: Partial<typeof connections.$inferInsert> = {}
+  if (data.enabled !== undefined) {
+    patch.warmupEnabled = data.enabled
+    if (data.enabled && !row.warmupEnabled) patch.warmupStartedAt = new Date()
+  }
+  if (data.startVolume !== undefined) patch.warmupStartVolume = data.startVolume
+  if (data.dailyIncrease !== undefined) patch.warmupDailyIncrease = data.dailyIncrease
+  if (data.maxVolume !== undefined) patch.warmupMaxVolume = data.maxVolume
+  if (data.replyRate !== undefined) patch.warmupReplyRate = data.replyRate
+
+  if (Object.keys(patch).length > 0) {
+    await db.update(connections).set(patch).where(eq(connections.id, id))
+  }
+  revalidatePath('/connections')
+}
+
+/** Run one warmup pass now (no pacing; still capped by each mailbox's daily target). */
+export async function triggerWarmup(): Promise<{
+  ok: boolean
+  error?: string
+  sent?: number
+  replied?: number
+  found?: number
+}> {
+  try {
+    const result = await runWarmupNow()
+    revalidatePath('/connections')
+    if (!result) return { ok: false, error: 'A warmup run is already in progress' }
+    return { ok: true, ...result }
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) }
+  }
 }

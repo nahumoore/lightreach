@@ -21,4 +21,7 @@ export async function register() {
 
   const { startInboxPoller } = await import("./lib/inbox-poller")
   startInboxPoller()
+
+  const { startWarmup } = await import("./lib/warmup")
+  startWarmup()
 }

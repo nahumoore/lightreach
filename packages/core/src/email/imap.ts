@@ -301,3 +301,86 @@ export async function fetchRecent(
 
   return { emails: results, uidValidity };
 }
+
+// ---------------------------------------------------------------------------
+// Warmup: locate, rescue and mark warmup messages
+// ---------------------------------------------------------------------------
+
+/** Where a warmup message was found on the recipient's side. */
+export type WarmupPlacement = "inbox" | "spam";
+
+/** Common junk-folder paths for servers that don't advertise the \Junk special-use flag. */
+const JUNK_FOLDER_FALLBACKS = ["spam", "junk", "[gmail]/spam", "junk email", "inbox.junk"];
+
+/** Find the junk/spam folder: the RFC 6154 \Junk flag first, then well-known names. */
+async function findJunkFolder(client: ImapFlow): Promise<string | null> {
+  const folders = await client.list();
+  const flagged = folders.find((f) => f.specialUse === "\\Junk");
+  if (flagged) return flagged.path;
+  for (const name of JUNK_FOLDER_FALLBACKS) {
+    const match = folders.find((f) => f.path.toLowerCase() === name);
+    if (match) return match.path;
+  }
+  return null;
+}
+
+/** UIDs in the currently open mailbox whose Message-ID header contains `messageId`. */
+async function searchByMessageId(client: ImapFlow, messageId: string): Promise<number[]> {
+  const uids = await client.search({ header: { "message-id": messageId } }, { uid: true });
+  return uids || [];
+}
+
+/**
+ * Look for warmup messages on the recipient's side in a single IMAP session.
+ *
+ * Each id (normalized, no angle brackets) is searched in INBOX first, then in the
+ * junk folder. A message found in junk is moved to INBOX (the "not spam" signal
+ * mailbox providers learn from) and every message found is marked \Seen.
+ *
+ * Returns the placement of each id that was found; ids found nowhere are absent
+ * (the caller decides when "not found yet" becomes "missing").
+ */
+export async function rescueWarmupMessages(
+  config: IMAPConfig,
+  messageIds: string[],
+): Promise<Map<string, WarmupPlacement>> {
+  const placements = new Map<string, WarmupPlacement>();
+  if (messageIds.length === 0) return placements;
+
+  const client = buildClient(config);
+  try {
+    await client.connect();
+
+    await client.mailboxOpen("INBOX");
+    for (const id of messageIds) {
+      const uids = await searchByMessageId(client, id);
+      if (uids.length === 0) continue;
+      await client.messageFlagsAdd(uids, ["\\Seen"], { uid: true });
+      placements.set(id, "inbox");
+    }
+
+    const remaining = messageIds.filter((id) => !placements.has(id));
+    if (remaining.length === 0) return placements;
+
+    const junkPath = await findJunkFolder(client);
+    if (!junkPath) return placements;
+
+    await client.mailboxOpen(junkPath);
+    for (const id of remaining) {
+      const uids = await searchByMessageId(client, id);
+      if (uids.length === 0) continue;
+      // Flag before moving: flags travel with the message, so it arrives in INBOX already read.
+      await client.messageFlagsAdd(uids, ["\\Seen"], { uid: true });
+      await client.messageMove(uids, "INBOX", { uid: true });
+      placements.set(id, "spam");
+    }
+  } finally {
+    try {
+      await client.logout();
+    } catch {
+      // ignore logout errors
+    }
+  }
+
+  return placements;
+}

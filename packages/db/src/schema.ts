@@ -48,6 +48,19 @@ export const connections = sqliteTable("connections", {
   imapSecure: integer("imap_secure", { mode: "boolean" }).default(true),
   imapUser: text("imap_user"),
   imapPassEncrypted: text("imap_pass_encrypted"),
+  /** Mailbox-to-mailbox warmup: when on, this mailbox trades short natural emails
+   *  with the other warmup mailboxes, rescues them from spam and replies to some. */
+  warmupEnabled: integer("warmup_enabled", { mode: "boolean" }).notNull().default(false),
+  /** Warmup emails per day on the first day of the ramp */
+  warmupStartVolume: integer("warmup_start_volume").notNull().default(2),
+  /** Extra warmup emails added per day since the ramp started */
+  warmupDailyIncrease: integer("warmup_daily_increase").notNull().default(2),
+  /** Ceiling on warmup emails per day once the ramp has topped out */
+  warmupMaxVolume: integer("warmup_max_volume").notNull().default(20),
+  /** Percent (0-100) of received warmup emails this mailbox replies to */
+  warmupReplyRate: integer("warmup_reply_rate").notNull().default(30),
+  /** Start of the current ramp, reset every time warmup is switched on */
+  warmupStartedAt: integer("warmup_started_at", { mode: "timestamp" }),
   createdAt: integer("created_at", { mode: "timestamp" })
     .notNull()
     .default(sql`(unixepoch())`),
@@ -265,6 +278,9 @@ export const inboundEmails = sqliteTable(
      *  delegated/shared mailbox polled through two separate connections) — hidden
      *  from the inbox UI and skipped for classification, but kept for uid tracking. */
     isDuplicate: integer("is_duplicate", { mode: "boolean" }).notNull().default(false),
+    /** true when this message is mailbox-to-mailbox warmup traffic (matched against
+     *  warmup_emails). Hidden from the inbox UI and skipped for classification. */
+    isWarmup: integer("is_warmup", { mode: "boolean" }).notNull().default(false),
     isRead: integer("is_read", { mode: "boolean" }).notNull().default(false),
     /** set when the user sends a reply to this inbound email */
     repliedAt: integer("replied_at", { mode: "timestamp" }),
@@ -277,6 +293,45 @@ export const inboundEmails = sqliteTable(
   },
   (table) => [
     uniqueIndex("inbound_email_uid_unique").on(table.connectionId, table.uid),
+  ],
+);
+
+// ---------------------------------------------------------------------------
+// warmup_emails: mailbox-to-mailbox warmup sends, replies and where they landed
+// ---------------------------------------------------------------------------
+export const warmupEmails = sqliteTable(
+  "warmup_emails",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    fromConnectionId: integer("from_connection_id")
+      .notNull()
+      .references(() => connections.id, { onDelete: "cascade" }),
+    toConnectionId: integer("to_connection_id")
+      .notNull()
+      .references(() => connections.id, { onDelete: "cascade" }),
+    /** Set on replies: the warmup email this one answers. Replies are never replied to. */
+    parentId: integer("parent_id"),
+    /** RFC822 Message-ID, normalized without angle brackets, matched by the inbox poller */
+    messageId: text("message_id").notNull(),
+    subject: text("subject").notNull().default(""),
+    /** 'sending' | 'sent' | 'failed' */
+    status: text("status").notNull().default("sending"),
+    error: text("error"),
+    sentAt: integer("sent_at", { mode: "timestamp" }),
+    /** Where the recipient found it: 'inbox' | 'spam' | 'missing', null until checked */
+    landedIn: text("landed_in"),
+    /** When the recipient side finished with it (found, rescued, marked read, or gave up) */
+    handledAt: integer("handled_at", { mode: "timestamp" }),
+    /** When the recipient sent a warmup reply to it */
+    repliedAt: integer("replied_at", { mode: "timestamp" }),
+    createdAt: integer("created_at", { mode: "timestamp" })
+      .notNull()
+      .default(sql`(unixepoch())`),
+  },
+  (table) => [
+    index("warmup_emails_message_id_idx").on(table.messageId),
+    index("warmup_emails_from_created_idx").on(table.fromConnectionId, table.createdAt),
+    index("warmup_emails_to_handled_idx").on(table.toConnectionId, table.handledAt),
   ],
 );
 
@@ -318,5 +373,8 @@ export type NewMessage = typeof messages.$inferInsert;
 
 export type InboundEmail = typeof inboundEmails.$inferSelect;
 export type NewInboundEmail = typeof inboundEmails.$inferInsert;
+
+export type WarmupEmail = typeof warmupEmails.$inferSelect;
+export type NewWarmupEmail = typeof warmupEmails.$inferInsert;
 
 export type AppSetting = typeof appSettings.$inferSelect;

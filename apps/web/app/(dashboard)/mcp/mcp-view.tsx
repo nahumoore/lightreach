@@ -121,6 +121,26 @@ const TOOL_GROUPS: { group: string; tools: ToolEntry[] }[] = [
         description: 'Send a test email through a saved connection',
         params: 'connectionId, to, subject?, body?',
       },
+      {
+        name: 'get_warmup_status',
+        description: 'Warmup ramp, today’s progress and inbox/spam placement',
+        params: 'connectionId?',
+      },
+      {
+        name: 'set_warmup',
+        description: 'Change warmup settings (partial update)',
+        params: 'connectionId, enabled?, startVolume?, dailyIncrease?, maxVolume?, replyRate?',
+      },
+      {
+        name: 'trigger_warmup',
+        description: 'Run one warmup pass now (still capped by today’s target)',
+        params: '—',
+      },
+      {
+        name: 'list_warmup_emails',
+        description: 'List recent warmup emails and where they landed',
+        params: 'connectionId?, limit?',
+      },
     ],
   },
   {

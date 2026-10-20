@@ -374,6 +374,7 @@ export async function getFullThread(inboundId: number): Promise<ThreadMessage[]>
           eq(sql`lower(${inboundEmails.fromEmail})`, lowerFromEmail),
           eq(inboundEmails.isDuplicate, false),
           eq(inboundEmails.isBounce, false),
+          eq(inboundEmails.isWarmup, false),
         ),
       )
       .orderBy(inboundEmails.receivedAt),

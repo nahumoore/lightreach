@@ -17,6 +17,7 @@ leaving your machine, no per-seat pricing.
 - **Campaigns** — pair a sequence with a lead list; choose which mailboxes to rotate across; set a send schedule
 - **Scheduling** — send-window (time of day), days of week, daily cap, and randomized delay jitter between sends
 - **Email rotation** — spread sends evenly across mailboxes; respect per-account daily limits
+- **Mailbox warmup**: your mailboxes trade short, natural emails with each other on a daily ramp, move any that land in spam back to the inbox, and reply to some; works best with 3+ mailboxes on different domains (IMAP required)
 - **Dashboard** — activity overview and send analytics
 
 ## Requirements

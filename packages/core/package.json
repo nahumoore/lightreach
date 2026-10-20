@@ -12,6 +12,7 @@
     "./crypto": "./src/crypto.ts",
     "./csv": "./src/csv.ts",
     "./rotation": "./src/rotation.ts",
+    "./warmup": "./src/warmup.ts",
     "./email/transport": "./src/email/transport.ts",
     "./email/imap": "./src/email/imap.ts",
     "./email/dns": "./src/email/dns.ts",

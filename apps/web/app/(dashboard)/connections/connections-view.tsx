@@ -53,7 +53,9 @@ import {
   IconTrash,
   IconCheck,
   IconX,
+  IconFlame,
 } from '@tabler/icons-react'
+import type { WarmupStatus } from '@/lib/warmup'
 import {
   createConnection,
   updateConnection,
@@ -61,6 +63,8 @@ import {
   toggleConnectionStatus,
   testConnection,
   testConnectionDraft,
+  updateWarmupSettings,
+  triggerWarmup,
 } from './actions'
 
 export type DnsRecords = {
@@ -92,6 +96,7 @@ export type SafeConnection = {
   imapPort: number | null
   imapSecure: boolean | null
   imapUser: string | null
+  warmup: WarmupStatus | null
 }
 
 type FormValues = {
@@ -185,6 +190,43 @@ function dnsBadge(dns: DnsRecords) {
         {dnsRecordRow('SPF', dns.spf)}
         {dnsRecordRow('DKIM', dns.dkim)}
         {dnsRecordRow('DMARC', dns.dmarc)}
+      </TooltipContent>
+    </Tooltip>
+  )
+}
+
+function warmupCell(warmup: WarmupStatus | null) {
+  if (!warmup || warmup.state === 'off') {
+    return <span className="text-muted-foreground text-xs">Off</span>
+  }
+
+  const summary =
+    warmup.state === 'waiting' ? (
+      <Badge variant="secondary">Waiting</Badge>
+    ) : (
+      <span className="text-xs">
+        {warmup.sentToday}/{warmup.todayTarget} today
+        <span className="text-muted-foreground"> · day {warmup.rampDay}</span>
+      </span>
+    )
+
+  const week = warmup.last7Days
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <span className="inline-flex cursor-default items-center gap-1.5">
+          {summary}
+          {warmup.lastError && <IconX className="size-3.5 text-red-400" />}
+        </span>
+      </TooltipTrigger>
+      <TooltipContent side="top" className="flex max-w-xs flex-col gap-1 px-3 py-2 text-xs">
+        {warmup.reason && <span>{warmup.reason}</span>}
+        <span>
+          Last 7 days: {week.inbox} inbox · {week.spam} spam · {week.missing} missing
+          {week.pending > 0 && ` · ${week.pending} pending`}
+        </span>
+        <span>Replies sent today: {warmup.repliesToday}</span>
+        {warmup.lastError && <span className="text-red-400">{warmup.lastError}</span>}
       </TooltipContent>
     </Tooltip>
   )
@@ -523,9 +565,141 @@ function ConnectionDialog({ open, onOpenChange, editConnection }: ConnectionDial
   )
 }
 
+type WarmupFormValues = {
+  enabled: boolean
+  startVolume: number
+  dailyIncrease: number
+  maxVolume: number
+  replyRate: number
+}
+
+interface WarmupDialogProps {
+  open: boolean
+  onOpenChange: (open: boolean) => void
+  connection: SafeConnection
+}
+
+/** Remounted (via `key`) each time it opens, so the form always starts from saved values. */
+function WarmupDialog({ open, onOpenChange, connection }: WarmupDialogProps) {
+  const warmup = connection.warmup
+  const [form, setForm] = useState<WarmupFormValues>(() => ({
+    enabled: warmup?.enabled ?? false,
+    startVolume: warmup?.startVolume ?? 2,
+    dailyIncrease: warmup?.dailyIncrease ?? 2,
+    maxVolume: warmup?.maxVolume ?? 20,
+    replyRate: warmup?.replyRate ?? 30,
+  }))
+  const [isPending, startTransition] = useTransition()
+
+  function set<K extends keyof WarmupFormValues>(key: K, value: WarmupFormValues[K]) {
+    setForm((prev) => ({ ...prev, [key]: value }))
+  }
+
+  function handleSubmit(e: React.FormEvent) {
+    e.preventDefault()
+    startTransition(async () => {
+      try {
+        await updateWarmupSettings(connection.id, form)
+        toast.success('Warmup settings saved')
+        onOpenChange(false)
+      } catch (err) {
+        toast.error(err instanceof Error ? err.message : 'Something went wrong')
+      }
+    })
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle>Warmup · {connection.fromEmail}</DialogTitle>
+        </DialogHeader>
+        <form id={`warmup-form-${connection.id}`} onSubmit={handleSubmit} className="grid gap-4">
+          <p className="text-muted-foreground text-xs">
+            Warmup trades short, natural emails between your own mailboxes, moves any that land in
+            spam back to the inbox and replies to some of them. Each warmup mailbox needs IMAP.
+            Works best with 3+ mailboxes on different domains.
+          </p>
+          <div className="flex items-center justify-between">
+            <Label htmlFor="warmup-enabled" className="cursor-pointer">
+              Enable warmup
+            </Label>
+            <Switch
+              id="warmup-enabled"
+              checked={form.enabled}
+              onCheckedChange={(v) => set('enabled', v)}
+            />
+          </div>
+          {warmup?.enabled && warmup.reason && (
+            <p className="text-xs text-amber-400">{warmup.reason}</p>
+          )}
+          <div className="grid grid-cols-2 gap-3">
+            <div className="grid gap-1.5">
+              <Label htmlFor="warmup-start">Start volume / day</Label>
+              <Input
+                id="warmup-start"
+                type="number"
+                min={1}
+                value={form.startVolume}
+                onChange={(e) => set('startVolume', Number(e.target.value))}
+                required
+              />
+            </div>
+            <div className="grid gap-1.5">
+              <Label htmlFor="warmup-increase">Daily increase</Label>
+              <Input
+                id="warmup-increase"
+                type="number"
+                min={0}
+                value={form.dailyIncrease}
+                onChange={(e) => set('dailyIncrease', Number(e.target.value))}
+                required
+              />
+            </div>
+            <div className="grid gap-1.5">
+              <Label htmlFor="warmup-max">Max volume / day</Label>
+              <Input
+                id="warmup-max"
+                type="number"
+                min={1}
+                value={form.maxVolume}
+                onChange={(e) => set('maxVolume', Number(e.target.value))}
+                required
+              />
+            </div>
+            <div className="grid gap-1.5">
+              <Label htmlFor="warmup-reply">Reply rate (%)</Label>
+              <Input
+                id="warmup-reply"
+                type="number"
+                min={0}
+                max={100}
+                value={form.replyRate}
+                onChange={(e) => set('replyRate', Number(e.target.value))}
+                required
+              />
+            </div>
+          </div>
+          <p className="text-muted-foreground text-xs">
+            Warmup has its own ramp and does not use this mailbox&apos;s campaign daily limit.
+          </p>
+        </form>
+        <DialogFooter showCloseButton>
+          <Button type="submit" form={`warmup-form-${connection.id}`} disabled={isPending}>
+            {isPending && <IconLoader className="mr-1.5 size-4 animate-spin" />}
+            Save
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
 function RowActions({ connection }: { connection: SafeConnection }) {
   const [isPending, startTransition] = useTransition()
   const [editOpen, setEditOpen] = useState(false)
+  const [warmupOpen, setWarmupOpen] = useState(false)
+  const [warmupKey, setWarmupKey] = useState(0)
 
   function handleTest() {
     startTransition(async () => {
@@ -573,6 +747,15 @@ function RowActions({ connection }: { connection: SafeConnection }) {
             <IconPencil className="size-4" />
             Edit
           </DropdownMenuItem>
+          <DropdownMenuItem
+            onSelect={() => {
+              setWarmupKey((k) => k + 1)
+              setWarmupOpen(true)
+            }}
+          >
+            <IconFlame className="size-4" />
+            Warmup settings
+          </DropdownMenuItem>
           <DropdownMenuItem onSelect={handleToggle}>
             {connection.status === 'active' ? (
               <>
@@ -594,12 +777,35 @@ function RowActions({ connection }: { connection: SafeConnection }) {
         </DropdownMenuContent>
       </DropdownMenu>
       <ConnectionDialog open={editOpen} onOpenChange={setEditOpen} editConnection={connection} />
+      <WarmupDialog
+        key={warmupKey}
+        open={warmupOpen}
+        onOpenChange={setWarmupOpen}
+        connection={connection}
+      />
     </>
   )
 }
 
 export function ConnectionsView({ connections }: { connections: SafeConnection[] }) {
   const [addOpen, setAddOpen] = useState(false)
+  const [isWarmupPending, startWarmupTransition] = useTransition()
+  const anyWarmup = connections.some((c) => c.warmup?.enabled)
+
+  function handleRunWarmup() {
+    startWarmupTransition(async () => {
+      const toastId = toast.loading('Running warmup…')
+      const result = await triggerWarmup()
+      if (result.ok) {
+        toast.success(
+          `Warmup ran: ${result.sent} sent, ${result.replied} replied, ${result.found} found in inboxes`,
+          { id: toastId },
+        )
+      } else {
+        toast.error(`Failed: ${result.error}`, { id: toastId })
+      }
+    })
+  }
 
   return (
     <div className="space-y-6">
@@ -610,10 +816,22 @@ export function ConnectionsView({ connections }: { connections: SafeConnection[]
             Connect SMTP mailboxes to send your campaigns.
           </p>
         </div>
-        <Button className="gap-2" onClick={() => setAddOpen(true)}>
-          <IconMailPlus className="size-4" />
-          Add mailbox
-        </Button>
+        <div className="flex items-center gap-2">
+          {anyWarmup && (
+            <Button variant="outline" className="gap-2" disabled={isWarmupPending} onClick={handleRunWarmup}>
+              {isWarmupPending ? (
+                <IconLoader className="size-4 animate-spin" />
+              ) : (
+                <IconFlame className="size-4" />
+              )}
+              Run warmup now
+            </Button>
+          )}
+          <Button className="gap-2" onClick={() => setAddOpen(true)}>
+            <IconMailPlus className="size-4" />
+            Add mailbox
+          </Button>
+        </div>
       </div>
 
       {connections.length === 0 ? (
@@ -645,6 +863,7 @@ export function ConnectionsView({ connections }: { connections: SafeConnection[]
                     <TableHead>DNS Records</TableHead>
                     <TableHead>Daily limit</TableHead>
                     <TableHead>Status</TableHead>
+                    <TableHead>Warmup</TableHead>
                     <TableHead>Last tested</TableHead>
                     <TableHead className="w-10" />
                   </TableRow>
@@ -657,6 +876,7 @@ export function ConnectionsView({ connections }: { connections: SafeConnection[]
                       <TableCell>{dnsBadge(conn.dnsRecords)}</TableCell>
                       <TableCell>{conn.dailyLimit}</TableCell>
                       <TableCell>{statusBadge(conn.status)}</TableCell>
+                      <TableCell>{warmupCell(conn.warmup)}</TableCell>
                       <TableCell className="text-muted-foreground text-xs">
                         {formatLastTested(conn.lastTestedAt)}
                       </TableCell>

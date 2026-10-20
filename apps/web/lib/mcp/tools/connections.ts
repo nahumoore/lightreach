@@ -9,7 +9,10 @@ import {
   testConnection,
   toggleConnectionStatus,
   sendTestEmail,
+  updateWarmupSettings,
+  triggerWarmup,
 } from '@/app/(dashboard)/connections/actions'
+import { getWarmupStatus, listWarmupEmails } from '@/lib/warmup'
 import { redactConnection } from '../redact'
 import { ok, err } from './shared'
 
@@ -169,6 +172,106 @@ export function registerConnectionsTools(server: McpServer) {
       return result.ok
         ? ok({ ok: true, messageId: result.messageId })
         : err(result.error ?? 'Failed to send test email')
+    },
+  )
+
+  server.tool(
+    'get_warmup_status',
+    'Get mailbox-to-mailbox warmup status: settings, ramp day, today\'s target vs sent, and where the last 7 days of warmup mail landed (inbox / spam / missing). Omit connectionId for all mailboxes.',
+    {
+      connectionId: z
+        .number()
+        .int()
+        .positive()
+        .optional()
+        .describe('Connection ID (omit for every mailbox)'),
+    },
+    async ({ connectionId }) => {
+      const status = await getWarmupStatus(connectionId)
+      if (connectionId !== undefined && status.length === 0) return err('Connection not found')
+      return ok(connectionId !== undefined ? status[0] : status)
+    },
+  )
+
+  server.tool(
+    'set_warmup',
+    'Change warmup settings for one mailbox. Only the fields you pass are updated. Turning warmup on restarts its ramp. Warmup needs IMAP enabled and at least two warmup mailboxes.',
+    {
+      connectionId: z.number().int().positive().describe('Connection ID'),
+      enabled: z.boolean().optional().describe('Turn warmup on or off'),
+      startVolume: z
+        .number()
+        .int()
+        .min(1)
+        .max(500)
+        .optional()
+        .describe('Warmup emails per day on the first day (default 2)'),
+      dailyIncrease: z
+        .number()
+        .int()
+        .min(0)
+        .max(500)
+        .optional()
+        .describe('Extra warmup emails added each day (default 2)'),
+      maxVolume: z
+        .number()
+        .int()
+        .min(1)
+        .max(500)
+        .optional()
+        .describe('Ceiling on warmup emails per day (default 20)'),
+      replyRate: z
+        .number()
+        .int()
+        .min(0)
+        .max(100)
+        .optional()
+        .describe('Percent of received warmup emails to reply to (default 30)'),
+    },
+    async ({ connectionId, ...data }) => {
+      try {
+        await updateWarmupSettings(connectionId, data)
+        const [status] = await getWarmupStatus(connectionId)
+        return ok(status)
+      } catch (e) {
+        return err(e instanceof Error ? e.message : String(e))
+      }
+    },
+  )
+
+  server.tool(
+    'trigger_warmup',
+    'Run one warmup pass now: skips the through-the-day pacing, but each mailbox still sends at most one new email per pass and never more than today\'s target. Also checks pending warmup mail and sends replies.',
+    {},
+    async () => {
+      const result = await triggerWarmup()
+      return result.ok
+        ? ok({ sent: result.sent, replied: result.replied, found: result.found })
+        : err(result.error ?? 'Warmup run failed')
+    },
+  )
+
+  server.tool(
+    'list_warmup_emails',
+    'List recent warmup emails (newest first) with status and where each landed',
+    {
+      connectionId: z
+        .number()
+        .int()
+        .positive()
+        .optional()
+        .describe('Only emails this mailbox sent or received'),
+      limit: z
+        .number()
+        .int()
+        .min(1)
+        .max(500)
+        .default(50)
+        .describe('Max records to return (default 50)'),
+    },
+    async ({ connectionId, limit }) => {
+      const rows = await listWarmupEmails(connectionId, limit)
+      return ok(rows)
     },
   )
 }
