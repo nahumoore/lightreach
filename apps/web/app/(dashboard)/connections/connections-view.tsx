@@ -532,7 +532,9 @@ function RowActions({ connection }: { connection: SafeConnection }) {
       const toastId = toast.loading('Testing connection…')
       const result = await testConnection(connection.id)
       if (result.ok) {
-        toast.success('Connection verified', { id: toastId })
+        toast.success(result.imap ? 'SMTP and IMAP verified' : 'Connection verified', {
+          id: toastId,
+        })
       } else {
         toast.error(`Failed: ${result.error}`, { id: toastId })
       }

@@ -33,6 +33,7 @@ const TOOL_GROUPS: { group: string; tools: ToolEntry[] }[] = [
     tools: [
       { name: 'list_lists', description: 'List all lead lists', params: '—' },
       { name: 'create_list', description: 'Create a new lead list', params: 'name' },
+      { name: 'rename_list', description: 'Rename a lead list', params: 'id, name' },
       { name: 'delete_list', description: 'Delete a list and all its leads', params: 'id' },
     ],
   },
@@ -42,20 +43,25 @@ const TOOL_GROUPS: { group: string; tools: ToolEntry[] }[] = [
       {
         name: 'list_leads',
         description: 'List leads (filterable)',
-        params: 'listId?, status?, limit?',
+        params: 'listId?, status?, limit?, offset?',
       },
       { name: 'get_lead', description: 'Get a single lead by ID', params: 'id' },
       {
         name: 'create_lead',
         description: 'Create a new lead in a list',
-        params: 'listId, email, firstName?, lastName?, company?, openingLine?',
+        params: 'listId, email, firstName?, lastName?, company?, openingLine?, customFields?',
       },
       {
         name: 'update_lead',
         description: 'Update lead fields',
-        params: 'id, email?, firstName?, lastName?, company?, openingLine?, status?',
+        params: 'id, email?, firstName?, lastName?, company?, openingLine?, status?, customFields?',
       },
       { name: 'delete_lead', description: 'Delete a lead by ID', params: 'id' },
+      {
+        name: 'move_leads',
+        description: 'Move leads to another list, skipping duplicate emails',
+        params: 'leadIds[], targetListId',
+      },
       {
         name: 'import_leads',
         description: 'Bulk-import leads, skipping duplicates',
@@ -106,11 +112,15 @@ const TOOL_GROUPS: { group: string; tools: ToolEntry[] }[] = [
       },
       {
         name: 'update_connection',
-        description: 'Update mailbox (leave passwords blank to keep)',
-        params: 'id, …same as create…',
+        description: 'Partial update: only passed fields change',
+        params: 'id, …any create field…',
       },
       { name: 'delete_connection', description: 'Delete a mailbox', params: 'id' },
-      { name: 'test_connection', description: 'Verify SMTP credentials', params: 'id' },
+      {
+        name: 'test_connection',
+        description: 'Verify SMTP, and IMAP when enabled',
+        params: 'id',
+      },
       {
         name: 'toggle_connection_status',
         description: 'Toggle active ↔ paused',
@@ -138,6 +148,11 @@ const TOOL_GROUPS: { group: string; tools: ToolEntry[] }[] = [
         params: 'name, sequenceId, listId, connectionIds[], sendWindow…',
       },
       {
+        name: 'update_campaign',
+        description: 'Edit a draft or paused campaign (partial update)',
+        params: 'id, name?, sequenceId?, listId?, connectionIds?, sendWindow…',
+      },
+      {
         name: 'launch_campaign',
         description: 'Queue step-1 messages and set status to running',
         params: 'id',
@@ -153,7 +168,7 @@ const TOOL_GROUPS: { group: string; tools: ToolEntry[] }[] = [
       {
         name: 'list_messages',
         description: 'List send-queue messages (filterable)',
-        params: 'campaignId?, leadId?, status?, limit?',
+        params: 'campaignId?, leadId?, status?, limit?, offset?',
       },
       { name: 'get_message', description: 'Get a single message by ID', params: 'id' },
     ],

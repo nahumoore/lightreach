@@ -1,7 +1,15 @@
 'use server'
 
-import { db, campaigns, campaignConnections, messages } from '@workspace/db'
-import { eq, and, lte, isNotNull, asc } from 'drizzle-orm'
+import {
+  db,
+  campaigns,
+  campaignConnections,
+  connections,
+  lists,
+  messages,
+  sequences,
+} from '@workspace/db'
+import { eq, and, lte, isNotNull, asc, inArray } from 'drizzle-orm'
 import { nextSendWindowStart } from '@workspace/core/rotation'
 import { enqueueNewLeads } from '@/lib/enqueue-leads'
 import { revalidatePath } from 'next/cache'
@@ -47,6 +55,102 @@ export async function createCampaign(data: CreateCampaignInput): Promise<number>
 
   revalidatePath('/campaigns')
   return campaignId
+}
+
+/**
+ * Partial update of a draft or paused campaign: only the fields present in
+ * `data` change. The scheduler reads schedule, cap and mailbox settings from the
+ * campaign on every tick, so those take effect immediately; on resume any
+ * past-due messages are re-staggered with the new jitter and send window. The
+ * sequence and list can only change while the campaign is still a draft, since
+ * a launched campaign already has messages queued or sent for them.
+ */
+export async function updateCampaign(id: number, data: Partial<CreateCampaignInput>) {
+  const [campaign] = await db.select().from(campaigns).where(eq(campaigns.id, id))
+  if (!campaign) throw new Error('Campaign not found')
+
+  if (campaign.status === 'running') {
+    throw new Error('Pause the campaign before editing it')
+  }
+  if (campaign.status !== 'draft' && campaign.status !== 'paused') {
+    throw new Error(`A ${campaign.status} campaign cannot be edited`)
+  }
+
+  const sequenceChanged =
+    data.sequenceId !== undefined && data.sequenceId !== campaign.sequenceId
+  const listChanged = data.listId !== undefined && data.listId !== campaign.listId
+  if ((sequenceChanged || listChanged) && campaign.status !== 'draft') {
+    throw new Error(
+      'The sequence and list cannot be changed once a campaign has been launched. Create a new campaign instead',
+    )
+  }
+
+  const minDelaySeconds = data.minDelaySeconds ?? campaign.minDelaySeconds
+  const maxDelaySeconds = data.maxDelaySeconds ?? campaign.maxDelaySeconds
+  if (minDelaySeconds > maxDelaySeconds) {
+    throw new Error('minDelaySeconds cannot be greater than maxDelaySeconds')
+  }
+
+  if (data.timezone !== undefined) {
+    try {
+      new Intl.DateTimeFormat('en-US', { timeZone: data.timezone })
+    } catch {
+      throw new Error(`Unknown timezone: ${data.timezone}`)
+    }
+  }
+
+  // Validate every referenced row before writing, so a bad id can't leave the
+  // campaign half-updated.
+  if (data.sequenceId != null) {
+    const [seq] = await db
+      .select({ id: sequences.id })
+      .from(sequences)
+      .where(eq(sequences.id, data.sequenceId))
+    if (!seq) throw new Error('Sequence not found')
+  }
+  if (data.listId != null) {
+    const [list] = await db.select({ id: lists.id }).from(lists).where(eq(lists.id, data.listId))
+    if (!list) throw new Error('List not found')
+  }
+  const connectionIds = data.connectionIds ? [...new Set(data.connectionIds)] : undefined
+  if (connectionIds && connectionIds.length > 0) {
+    const found = await db
+      .select({ id: connections.id })
+      .from(connections)
+      .where(inArray(connections.id, connectionIds))
+    const foundIds = new Set(found.map((c) => c.id))
+    const missing = connectionIds.filter((cid) => !foundIds.has(cid))
+    if (missing.length > 0) throw new Error(`Connection not found: ${missing.join(', ')}`)
+  }
+
+  const patch: Partial<typeof campaigns.$inferInsert> = {}
+  if (data.name !== undefined) patch.name = data.name.trim()
+  if (data.sequenceId !== undefined) patch.sequenceId = data.sequenceId
+  if (data.listId !== undefined) patch.listId = data.listId
+  if (data.sendWindowStart !== undefined) patch.sendWindowStart = data.sendWindowStart
+  if (data.sendWindowEnd !== undefined) patch.sendWindowEnd = data.sendWindowEnd
+  if (data.timezone !== undefined) patch.timezone = data.timezone
+  if (data.daysOfWeek !== undefined) patch.daysOfWeek = data.daysOfWeek
+  if (data.dailyCap !== undefined) patch.dailyCap = data.dailyCap
+  if (data.minDelaySeconds !== undefined) patch.minDelaySeconds = data.minDelaySeconds
+  if (data.maxDelaySeconds !== undefined) patch.maxDelaySeconds = data.maxDelaySeconds
+
+  // better-sqlite3 transactions are synchronous, hence .run() and no await.
+  db.transaction((tx) => {
+    if (Object.keys(patch).length > 0) {
+      tx.update(campaigns).set(patch).where(eq(campaigns.id, id)).run()
+    }
+    if (connectionIds) {
+      tx.delete(campaignConnections).where(eq(campaignConnections.campaignId, id)).run()
+      if (connectionIds.length > 0) {
+        tx.insert(campaignConnections)
+          .values(connectionIds.map((cid) => ({ campaignId: id, connectionId: cid })))
+          .run()
+      }
+    }
+  })
+
+  revalidatePath('/campaigns')
 }
 
 export async function launchCampaign(id: number) {

@@ -35,6 +35,16 @@ services:
       - "traefik.http.middlewares.lightreach-auth.basicauth.users=${BASIC_AUTH_USERS}"
       - "traefik.http.middlewares.lightreach-ratelimit.ratelimit.average=5"
       - "traefik.http.middlewares.lightreach-ratelimit.ratelimit.burst=10"
+      # /api/mcp checks its own bearer token. Basic auth must not apply here: it
+      # reads the same Authorization header, so MCP clients would get a 401.
+      # The longer rule already wins by default; priority just makes it explicit.
+      - "traefik.http.routers.lightreach-mcp.rule=Host(`${DOMAIN}`) && PathPrefix(`/api/mcp`)"
+      - "traefik.http.routers.lightreach-mcp.priority=100"
+      - "traefik.http.routers.lightreach-mcp.entrypoints=websecure"
+      - "traefik.http.routers.lightreach-mcp.tls=true"
+      - "traefik.http.routers.lightreach-mcp.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.lightreach-mcp.middlewares=lightreach-ratelimit"
+      - "traefik.http.routers.lightreach-mcp.service=lightreach"
       - "traefik.http.services.lightreach.loadbalancer.server.port=3000"
 
 volumes:

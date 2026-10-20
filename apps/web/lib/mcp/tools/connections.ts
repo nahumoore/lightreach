@@ -86,18 +86,39 @@ export function registerConnectionsTools(server: McpServer) {
 
   server.tool(
     'update_connection',
-    'Update an existing connection — leave smtpPass/imapPass empty to keep current passwords',
+    'Update an existing connection. Only the fields you pass are changed; passwords are only replaced when provided',
     {
       id: z.number().int().positive().describe('Connection ID to update'),
-      ...connectionBase,
-      smtpPass: z
-        .string()
-        .default('')
-        .describe('New SMTP password (leave empty to keep existing)'),
+      label: z.string().min(1).optional().describe('Display label for this mailbox'),
+      fromName: z.string().min(1).optional().describe('Sender display name'),
+      fromEmail: z.string().email().optional().describe('From email address'),
+      smtpHost: z.string().min(1).optional().describe('SMTP server hostname'),
+      smtpPort: z.number().int().min(1).max(65535).optional().describe('SMTP port'),
+      smtpSecure: z
+        .boolean()
+        .optional()
+        .describe('SSL/TLS (true) vs STARTTLS (false)'),
+      smtpUser: z.string().min(1).optional().describe('SMTP username'),
+      smtpPass: z.string().optional().describe('New SMTP password (omit to keep existing)'),
+      dailyLimit: z
+        .number()
+        .int()
+        .min(1)
+        .optional()
+        .describe('Max emails per day from this mailbox'),
+      imapEnabled: z.boolean().optional().describe('Enable IMAP inbox polling'),
+      imapSameAsSmtp: z
+        .boolean()
+        .optional()
+        .describe('Use same host/credentials as SMTP for IMAP'),
+      imapHost: z.string().optional().describe('IMAP hostname (only if imapSameAsSmtp=false)'),
+      imapPort: z.number().int().optional().describe('IMAP port'),
+      imapSecure: z.boolean().optional().describe('IMAP SSL/TLS'),
+      imapUser: z.string().optional().describe('IMAP username (only if imapSameAsSmtp=false)'),
       imapPass: z
         .string()
-        .default('')
-        .describe('New IMAP password (leave empty to keep existing)'),
+        .optional()
+        .describe('New IMAP password (only if imapSameAsSmtp=false, omit to keep existing)'),
     },
     async ({ id, ...data }) => {
       try {
@@ -125,11 +146,19 @@ export function registerConnectionsTools(server: McpServer) {
 
   server.tool(
     'test_connection',
-    'Verify SMTP credentials for a saved connection',
+    'Verify SMTP credentials for a saved connection, and IMAP too when IMAP is enabled. On success returns separate smtp and imap results (imap is null when disabled); on failure returns an error naming which check failed',
     { id: z.number().int().positive().describe('Connection ID to test') },
     async ({ id }) => {
       const result = await testConnection(id)
-      return result.ok ? ok({ ok: true }) : err(result.error ?? 'Connection test failed')
+      if (!result.ok) {
+        const detail = result.smtp
+          ? ` (smtp: ${result.smtp.ok ? 'ok' : 'failed'}, imap: ${
+              result.imap ? (result.imap.ok ? 'ok' : 'failed') : 'disabled'
+            })`
+          : ''
+        return err(`${result.error ?? 'Connection test failed'}${detail}`)
+      }
+      return ok({ ok: true, smtp: result.smtp, imap: result.imap })
     },
   )
 

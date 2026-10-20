@@ -1,7 +1,7 @@
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { z } from 'zod'
 import { db, messages } from '@workspace/db'
-import { eq, and } from 'drizzle-orm'
+import { eq, and, asc } from 'drizzle-orm'
 import { ok, err } from './shared'
 
 export function registerMessagesTools(server: McpServer) {
@@ -22,8 +22,14 @@ export function registerMessagesTools(server: McpServer) {
         .max(1000)
         .default(100)
         .describe('Max records to return (default 100)'),
+      offset: z
+        .number()
+        .int()
+        .min(0)
+        .default(0)
+        .describe('Records to skip, for paging (default 0)'),
     },
-    async ({ campaignId, leadId, status, limit }) => {
+    async ({ campaignId, leadId, status, limit, offset }) => {
       const rows = await db
         .select()
         .from(messages)
@@ -34,7 +40,9 @@ export function registerMessagesTools(server: McpServer) {
             status !== undefined ? eq(messages.status, status) : undefined,
           ),
         )
+        .orderBy(asc(messages.id))
         .limit(limit)
+        .offset(offset)
       return ok(rows)
     },
   )

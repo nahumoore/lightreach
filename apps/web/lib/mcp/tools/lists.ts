@@ -1,7 +1,7 @@
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { z } from 'zod'
 import { db, lists } from '@workspace/db'
-import { createList, deleteList } from '@/app/(dashboard)/leads/actions'
+import { createList, renameList, deleteList } from '@/app/(dashboard)/leads/actions'
 import { ok, err } from './shared'
 
 export function registerListsTools(server: McpServer) {
@@ -18,6 +18,23 @@ export function registerListsTools(server: McpServer) {
       try {
         const id = await createList(name)
         return ok({ id, name })
+      } catch (e) {
+        return err(e instanceof Error ? e.message : String(e))
+      }
+    },
+  )
+
+  server.tool(
+    'rename_list',
+    'Rename a lead list',
+    {
+      id: z.number().int().positive().describe('List ID to rename'),
+      name: z.string().min(1).describe('New name for the list'),
+    },
+    async ({ id, name }) => {
+      try {
+        await renameList(id, name)
+        return ok({ renamed: true, id, name })
       } catch (e) {
         return err(e instanceof Error ? e.message : String(e))
       }

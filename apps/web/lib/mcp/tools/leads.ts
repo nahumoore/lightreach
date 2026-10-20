@@ -1,12 +1,13 @@
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { z } from 'zod'
 import { db, leads } from '@workspace/db'
-import { eq, and } from 'drizzle-orm'
+import { eq, and, asc } from 'drizzle-orm'
 import {
   createLead,
   updateLead,
   deleteLead,
   importLeads,
+  moveLeads,
 } from '@/app/(dashboard)/leads/actions'
 import { ok, err } from './shared'
 
@@ -26,8 +27,14 @@ export function registerLeadsTools(server: McpServer) {
         .max(1000)
         .default(100)
         .describe('Max records to return (default 100)'),
+      offset: z
+        .number()
+        .int()
+        .min(0)
+        .default(0)
+        .describe('Records to skip, for paging (default 0)'),
     },
-    async ({ listId, status, limit }) => {
+    async ({ listId, status, limit, offset }) => {
       const rows = await db
         .select()
         .from(leads)
@@ -37,7 +44,9 @@ export function registerLeadsTools(server: McpServer) {
             status !== undefined ? eq(leads.status, status) : undefined,
           ),
         )
+        .orderBy(asc(leads.id))
         .limit(limit)
+        .offset(offset)
       return ok(rows)
     },
   )
@@ -63,6 +72,10 @@ export function registerLeadsTools(server: McpServer) {
       lastName: z.string().optional().describe('Last name'),
       company: z.string().optional().describe('Company name'),
       openingLine: z.string().optional().describe('Custom opening line for personalization'),
+      customFields: z
+        .record(z.string(), z.string())
+        .optional()
+        .describe('Extra fields usable as {{variables}} in sequences'),
     },
     async (data) => {
       try {
@@ -85,6 +98,10 @@ export function registerLeadsTools(server: McpServer) {
       company: z.string().optional().describe('New company'),
       openingLine: z.string().optional().describe('New opening line'),
       status: statusEnum.optional().describe('New status'),
+      customFields: z
+        .record(z.string(), z.string())
+        .optional()
+        .describe('Custom fields to set; merged into the lead\'s existing custom fields'),
     },
     async ({ id, ...patch }) => {
       try {
@@ -104,6 +121,27 @@ export function registerLeadsTools(server: McpServer) {
       try {
         await deleteLead(id)
         return ok({ deleted: true, id })
+      } catch (e) {
+        return err(e instanceof Error ? e.message : String(e))
+      }
+    },
+  )
+
+  server.tool(
+    'move_leads',
+    'Move leads to another list. Leads whose email already exists in the target list are skipped',
+    {
+      leadIds: z
+        .array(z.number().int().positive())
+        .min(1)
+        .max(1000)
+        .describe('IDs of the leads to move'),
+      targetListId: z.number().int().positive().describe('List to move the leads into'),
+    },
+    async ({ leadIds, targetListId }) => {
+      try {
+        const result = await moveLeads(leadIds, targetListId)
+        return ok(result)
       } catch (e) {
         return err(e instanceof Error ? e.message : String(e))
       }

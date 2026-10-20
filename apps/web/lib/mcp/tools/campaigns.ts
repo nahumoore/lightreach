@@ -4,6 +4,7 @@ import { db, campaigns, campaignConnections } from '@workspace/db'
 import { eq } from 'drizzle-orm'
 import {
   createCampaign,
+  updateCampaign,
   launchCampaign,
   pauseCampaign,
   resumeCampaign,
@@ -90,6 +91,74 @@ export function registerCampaignsTools(server: McpServer) {
       try {
         const id = await createCampaign(data)
         return ok({ id, name: data.name })
+      } catch (e) {
+        return err(e instanceof Error ? e.message : String(e))
+      }
+    },
+  )
+
+  server.tool(
+    'update_campaign',
+    'Update a draft or paused campaign. Only the fields you pass are changed. The sequence and list can only be changed while the campaign is a draft; running campaigns must be paused first',
+    {
+      id: z.number().int().positive().describe('Campaign ID to update'),
+      name: z.string().min(1).optional().describe('Campaign name'),
+      sequenceId: z
+        .number()
+        .int()
+        .positive()
+        .nullable()
+        .optional()
+        .describe('Sequence ID to use (draft campaigns only)'),
+      listId: z
+        .number()
+        .int()
+        .positive()
+        .nullable()
+        .optional()
+        .describe('Lead list ID (draft campaigns only)'),
+      connectionIds: z
+        .array(z.number().int().positive())
+        .optional()
+        .describe('Mailbox connection IDs to rotate across (replaces the current set)'),
+      sendWindowStart: z
+        .string()
+        .regex(/^\d{2}:\d{2}$/)
+        .optional()
+        .describe('Send window start time in HH:MM (24h)'),
+      sendWindowEnd: z
+        .string()
+        .regex(/^\d{2}:\d{2}$/)
+        .optional()
+        .describe('Send window end time in HH:MM (24h)'),
+      timezone: z.string().optional().describe('IANA timezone for the send window'),
+      daysOfWeek: z
+        .array(z.number().int().min(0).max(6))
+        .optional()
+        .describe('Days to send on (0=Sun, 1=Mon … 6=Sat)'),
+      dailyCap: z
+        .number()
+        .int()
+        .min(1)
+        .optional()
+        .describe('Max emails per day for this campaign'),
+      minDelaySeconds: z
+        .number()
+        .int()
+        .min(0)
+        .optional()
+        .describe('Min seconds of jitter between sends'),
+      maxDelaySeconds: z
+        .number()
+        .int()
+        .min(0)
+        .optional()
+        .describe('Max seconds of jitter between sends'),
+    },
+    async ({ id, ...data }) => {
+      try {
+        await updateCampaign(id, data)
+        return ok({ updated: true, id })
       } catch (e) {
         return err(e instanceof Error ? e.message : String(e))
       }
