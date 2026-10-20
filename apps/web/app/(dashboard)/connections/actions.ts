@@ -1,10 +1,11 @@
 'use server'
 import { db, connections } from '@workspace/db'
-import { eq } from 'drizzle-orm'
+import { and, eq, isNull, ne, or } from 'drizzle-orm'
 import { revalidatePath } from 'next/cache'
 import { encrypt, decrypt } from '@workspace/core/crypto'
 import { verifyConnection, sendMail } from '@workspace/core/email/transport'
 import { checkDomainAuth, domainFromEmail } from '@workspace/core/email/dns'
+import { healthResetPatch } from '@/lib/health'
 
 type DnsRecords = {
   spf: boolean
@@ -121,12 +122,27 @@ export async function deleteConnection(id: number) {
 }
 
 export async function toggleConnectionStatus(id: number, currentStatus: string) {
+  const [row] = await db
+    .select({ status: connections.status })
+    .from(connections)
+    .where(eq(connections.id, id))
+  if (!row) return
+
   const newStatus = currentStatus === 'active' ? 'paused' : 'active'
-  await db.update(connections).set({ status: newStatus }).where(eq(connections.id, id))
+  // Resuming a paused mailbox starts its bounce history fresh, so the bounces
+  // that got it auto-paused don't pause it again on the next health check. The
+  // stored status decides this, not the caller's currentStatus.
+  const resuming = row.status === 'paused' && newStatus === 'active'
+  await db
+    .update(connections)
+    .set({ status: newStatus, ...(resuming ? healthResetPatch() : {}) })
+    .where(eq(connections.id, id))
   revalidatePath('/connections')
 }
 
-export async function testConnection(id: number): Promise<{ ok: boolean; error?: string }> {
+export async function testConnection(
+  id: number,
+): Promise<{ ok: boolean; error?: string; autoPaused?: boolean }> {
   const [row] = await db.select().from(connections).where(eq(connections.id, id))
   if (!row) return { ok: false, error: 'Connection not found' }
 
@@ -142,20 +158,46 @@ export async function testConnection(id: number): Promise<{ ok: boolean; error?:
     runDnsCheck(row.fromEmail),
   ])
 
-  if (result.ok) {
+  const autoPaused = row.status === 'paused' && row.healthPausedAt !== null
+  // Never undo an auto-pause that lands while the test is running.
+  const notAutoPaused = or(ne(connections.status, 'paused'), isNull(connections.healthPausedAt))
+
+  if (autoPaused) {
+    // Auto-paused by the health check: a test only records its own result. The
+    // mailbox stays paused until it is resumed explicitly.
     await db
       .update(connections)
-      .set({ lastTestedAt: new Date(), lastError: null, status: 'active', dnsRecords })
+      .set({ lastTestedAt: new Date(), dnsRecords })
       .where(eq(connections.id, id))
+  } else if (result.ok) {
+    await db
+      .update(connections)
+      .set({
+        lastTestedAt: new Date(),
+        lastError: null,
+        status: 'active',
+        healthPausedAt: null,
+        dnsRecords,
+        // A passing test re-activates a user-paused mailbox, same as resuming it by hand.
+        ...(row.status === 'paused' ? { healthResetAt: new Date() } : {}),
+      })
+      .where(and(eq(connections.id, id), notAutoPaused))
   } else {
     await db
       .update(connections)
-      .set({ lastTestedAt: new Date(), lastError: result.error, status: 'error', dnsRecords })
-      .where(eq(connections.id, id))
+      .set({
+        lastTestedAt: new Date(),
+        lastError: result.error,
+        status: 'error',
+        healthPausedAt: null,
+        dnsRecords,
+      })
+      .where(and(eq(connections.id, id), notAutoPaused))
   }
 
   revalidatePath('/connections')
-  return result.ok ? { ok: true } : { ok: false, error: result.error }
+  if (!result.ok) return { ok: false, error: result.error }
+  return autoPaused ? { ok: true, autoPaused: true } : { ok: true }
 }
 
 export async function sendTestEmail(

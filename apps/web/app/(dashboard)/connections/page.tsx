@@ -1,8 +1,12 @@
 import { db, connections } from '@workspace/db'
+import { computeMailboxHealth } from '@/lib/health'
 import { ConnectionsView } from './connections-view'
 
 export default async function ConnectionsPage() {
-  const rows = await db.select().from(connections).orderBy(connections.createdAt)
+  const [rows, mailboxHealth] = await Promise.all([
+    db.select().from(connections).orderBy(connections.createdAt),
+    computeMailboxHealth(),
+  ])
 
   const safe = rows.map(({ smtpPassEncrypted: _sp, imapPassEncrypted: _ip, lastTestedAt, createdAt, ...rest }) => ({
     ...rest,
@@ -10,5 +14,7 @@ export default async function ConnectionsPage() {
     createdAt: createdAt.toISOString(),
   }))
 
-  return <ConnectionsView connections={safe} />
+  const health = Object.fromEntries(mailboxHealth.map((h) => [h.connectionId, h]))
+
+  return <ConnectionsView connections={safe} health={health} />
 }

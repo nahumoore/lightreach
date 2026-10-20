@@ -62,6 +62,7 @@ import {
   testConnection,
   testConnectionDraft,
 } from './actions'
+import type { MailboxHealth } from '@/lib/health'
 
 export type DnsRecords = {
   spf: boolean
@@ -185,6 +186,71 @@ function dnsBadge(dns: DnsRecords) {
         {dnsRecordRow('SPF', dns.spf)}
         {dnsRecordRow('DKIM', dns.dkim)}
         {dnsRecordRow('DMARC', dns.dmarc)}
+      </TooltipContent>
+    </Tooltip>
+  )
+}
+
+function healthCell(health: MailboxHealth | undefined) {
+  if (!health) return <span className="text-muted-foreground text-xs">-</span>
+
+  let badge
+  if (health.autoPaused) {
+    badge = (
+      <Badge className="bg-red-500/15 text-red-400 hover:bg-red-500/15">Auto-paused</Badge>
+    )
+  } else if (health.sent === 0 && health.bounces === 0) {
+    badge = <Badge variant="secondary">No sends</Badge>
+  } else if (health.sent === 0) {
+    // Bounce notices for mail sent before the window: a rate would be meaningless.
+    badge = (
+      <Badge className="bg-amber-500/15 text-amber-400 hover:bg-amber-500/15">
+        {health.bounces} bounced
+      </Badge>
+    )
+  } else {
+    const color = health.breached
+      ? 'bg-red-500/15 text-red-400 hover:bg-red-500/15'
+      : health.bounces > 0
+        ? 'bg-amber-500/15 text-amber-400 hover:bg-amber-500/15'
+        : 'bg-emerald-500/15 text-emerald-400 hover:bg-emerald-500/15'
+    badge = <Badge className={color}>{health.bounceRate}% bounced</Badge>
+  }
+
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <span className="inline-flex cursor-default items-center gap-2">
+          {badge}
+          {(health.sent > 0 || health.bounces > 0) && (
+            <span className="text-muted-foreground text-xs">{health.sent} sent</span>
+          )}
+        </span>
+      </TooltipTrigger>
+      <TooltipContent side="top" className="flex max-w-64 flex-col gap-1 px-3 py-2">
+        {health.autoPaused && (
+          <p className="text-xs">
+            {health.pauseReason ?? 'Paused by the mailbox health check.'}
+          </p>
+        )}
+        <p className="text-xs">
+          Last {health.windowDays} days: {health.bounces} bounced of {health.sent} sent
+        </p>
+        {!health.imapEnabled && (
+          <p className="text-xs opacity-80">
+            IMAP is off, so only rejections at send time are counted.
+          </p>
+        )}
+        {health.dns ? (
+          <>
+            {dnsRecordRow('SPF', health.dns.spf)}
+            {dnsRecordRow('DKIM', health.dns.dkim)}
+            {dnsRecordRow('DMARC', health.dns.dmarc)}
+          </>
+        ) : (
+          <p className="text-xs">DNS not checked</p>
+        )}
+        <p className="text-xs">Consecutive failures: {health.consecutiveFailures}</p>
       </TooltipContent>
     </Tooltip>
   )
@@ -598,7 +664,13 @@ function RowActions({ connection }: { connection: SafeConnection }) {
   )
 }
 
-export function ConnectionsView({ connections }: { connections: SafeConnection[] }) {
+export function ConnectionsView({
+  connections,
+  health,
+}: {
+  connections: SafeConnection[]
+  health: Record<number, MailboxHealth>
+}) {
   const [addOpen, setAddOpen] = useState(false)
 
   return (
@@ -645,6 +717,7 @@ export function ConnectionsView({ connections }: { connections: SafeConnection[]
                     <TableHead>DNS Records</TableHead>
                     <TableHead>Daily limit</TableHead>
                     <TableHead>Status</TableHead>
+                    <TableHead>Health</TableHead>
                     <TableHead>Last tested</TableHead>
                     <TableHead className="w-10" />
                   </TableRow>
@@ -657,6 +730,7 @@ export function ConnectionsView({ connections }: { connections: SafeConnection[]
                       <TableCell>{dnsBadge(conn.dnsRecords)}</TableCell>
                       <TableCell>{conn.dailyLimit}</TableCell>
                       <TableCell>{statusBadge(conn.status)}</TableCell>
+                      <TableCell>{healthCell(health[conn.id])}</TableCell>
                       <TableCell className="text-muted-foreground text-xs">
                         {formatLastTested(conn.lastTestedAt)}
                       </TableCell>

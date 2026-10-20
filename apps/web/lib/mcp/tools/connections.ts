@@ -129,7 +129,13 @@ export function registerConnectionsTools(server: McpServer) {
     { id: z.number().int().positive().describe('Connection ID to test') },
     async ({ id }) => {
       const result = await testConnection(id)
-      return result.ok ? ok({ ok: true }) : err(result.error ?? 'Connection test failed')
+      if (!result.ok) return err(result.error ?? 'Connection test failed')
+      return result.autoPaused
+        ? ok({
+            ok: true,
+            note: 'Credentials work, but the mailbox is still auto-paused by the health check. Resume it with toggle_connection_status.',
+          })
+        : ok({ ok: true })
     },
   )
 

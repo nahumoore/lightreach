@@ -528,7 +528,12 @@ async function runTick(): Promise<void> {
       if (isHardBounce(err)) {
         await db
           .update(messages)
-          .set({ status: 'failed', error: errMsg })
+          .set({
+            status: 'failed',
+            error: errMsg,
+            connectionId: pickResult.connectionId,
+            failedAt: new Date(),
+          })
           .where(eq(messages.id, msg.msgId))
         await db
           .update(leads)

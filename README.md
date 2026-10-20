@@ -17,6 +17,7 @@ leaving your machine, no per-seat pricing.
 - **Campaigns** — pair a sequence with a lead list; choose which mailboxes to rotate across; set a send schedule
 - **Scheduling** — send-window (time of day), days of week, daily cap, and randomized delay jitter between sends
 - **Email rotation** — spread sends evenly across mailboxes; respect per-account daily limits
+- **Mailbox health** — per-mailbox bounce rate over a rolling window; mailboxes that cross your threshold are paused automatically (on by default; turn it off in Settings)
 - **Dashboard** — activity overview and send analytics
 
 ## Requirements

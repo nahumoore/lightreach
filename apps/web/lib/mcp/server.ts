@@ -8,6 +8,7 @@ import { registerMessagesTools } from './tools/messages'
 import { registerInboxTools } from './tools/inbox'
 import { registerSettingsTools } from './tools/settings'
 import { registerStatsTools } from './tools/stats'
+import { registerHealthTools } from './tools/health'
 
 /**
  * Build a fresh stateless McpServer with all Lightreach domain tools registered.
@@ -28,6 +29,7 @@ export function buildMcpServer(): McpServer {
   registerInboxTools(server)
   registerSettingsTools(server)
   registerStatsTools(server)
+  registerHealthTools(server)
 
   return server
 }

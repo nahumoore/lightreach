@@ -11,9 +11,12 @@ import { Switch } from "@workspace/ui/components/switch"
 import { Label } from "@workspace/ui/components/label"
 import { Input } from "@workspace/ui/components/input"
 import { Button } from "@workspace/ui/components/button"
+import { getHealthSettings } from "@/lib/health"
+import { HealthSettingsForm } from "./health-settings-form"
 import {
   IconSettings,
   IconShield,
+  IconHeartbeat,
   IconBell,
   IconPalette,
   IconCheck,
@@ -22,7 +25,9 @@ import {
 
 const encKeySet = !!process.env["APP_ENCRYPTION_KEY"]
 
-export default function SettingsPage() {
+export default async function SettingsPage() {
+  const healthSettings = await getHealthSettings()
+
   return (
     <div className="space-y-6">
       <div>
@@ -141,6 +146,23 @@ export default function SettingsPage() {
               Save defaults
             </Button>
           </div>
+        </CardContent>
+      </Card>
+
+      {/* Mailbox health */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2 text-sm">
+            <IconHeartbeat className="size-4" />
+            Mailbox health
+          </CardTitle>
+          <CardDescription>
+            Bounce rate is measured per mailbox over the window. A mailbox with at least the
+            minimum sends and a rate at or above the threshold is paused automatically.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <HealthSettingsForm initial={healthSettings} />
         </CardContent>
       </Card>
 

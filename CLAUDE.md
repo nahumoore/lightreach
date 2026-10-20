@@ -18,12 +18,13 @@ services beyond your own SMTP mailboxes, and runs from a single `pnpm dev` comma
 |---|---|
 | **Dashboard** | Activity overview and send analytics. |
 | **Connections** | Add SMTP mailboxes (Gmail, Outlook, custom). Test, pause, track daily limits. Optional IMAP config per mailbox. |
+| **Mailbox health** | Per-mailbox bounce rate over a rolling window. Mailboxes at or above the threshold are auto-paused. Shown on Connections, tuned in Settings, exposed over MCP. |
 | **Inbox / Emails** | Poll received mail across all IMAP mailboxes. Automatic reply and warmup detection. |
 | **Leads** | Upload CSVs with column-mapping wizard. Manage lists + individual leads. |
 | **Sequences** | Multi-step email sequences with configurable `delayDays` between steps. Write with `{spintax\|options}` and `{{variable\|fallback}}` placeholders. Live preview. |
 | **Campaigns** | Pair a sequence with a lead list, assign mailboxes to rotate across, set schedule. |
 | **Scheduling** | Send-window (time of day), days of week, daily cap, min/max delay jitter between sends. |
-| **Settings** | App-level defaults, encryption key status, sending behavior. |
+| **Settings** | App-level defaults, encryption key status, sending behavior, mailbox health thresholds. |
 
 ---
 
@@ -193,16 +194,16 @@ docker compose up -d
 
 | Table | Purpose |
 |---|---|
-| `connections` | SMTP/IMAP mailboxes: host, port, auth, daily limit |
+| `connections` | SMTP/IMAP mailboxes: host, port, auth, daily limit, `healthResetAt` (bounce history starts here), `healthPausedAt` (set on auto-pause) |
 | `lists` | Named lead lists |
 | `leads` | Individual contacts linked to a list |
 | `sequences` | Multi-step email sequences (replaced `templates`) |
 | `sequence_steps` | Individual steps: subject, body, delayDays |
 | `campaigns` | Pair sequence + list + mailboxes + schedule |
 | `campaign_connections` | Many-to-many: campaign ↔ connection (rotation set) |
-| `messages` | Per-lead send queue + delivery log |
+| `messages` | Per-lead send queue + delivery log (`failedAt` marks SMTP hard bounces) |
 | `inbound_emails` | Received mail fetched via IMAP (replies, warmup) |
-| `app_settings` | Key-value store for app-level preferences |
+| `app_settings` | Key-value store for app-level preferences (filter keywords, MCP token, `health_*` thresholds) |
 
 See `packages/db/src/schema.ts` for full column definitions.
 
@@ -210,10 +211,11 @@ See `packages/db/src/schema.ts` for full column definitions.
 
 ## In-Process Scheduler & Inbox Poller
 
-`apps/web/instrumentation.ts` boots two background jobs on the Node.js runtime.
-Both are **Node-only** — they will not run in Edge or serverless environments. For
-production use, run the app as a persistent Node process (`pnpm build && pnpm start`),
-not on a serverless platform that spins down between requests.
+`apps/web/instrumentation.ts` boots the background jobs (scheduler, inbox poller and the
+mailbox health monitor below) on the Node.js runtime. All are **Node-only** — they will not
+run in Edge or serverless environments. For production use, run the app as a persistent Node
+process (`pnpm build && pnpm start`), not on a serverless platform that spins down between
+requests.
 
 **Scheduler loop** (`lib/scheduler.ts`):
 1. Find `messages` with `status = 'queued'` and `scheduledAt <= now`
@@ -226,6 +228,49 @@ not on a serverless platform that spins down between requests.
 **Inbox poller** (`lib/inbox-poller.ts`):
 Periodically fetches new mail via IMAP across all active connections with IMAP configured,
 stores them in `inbound_emails`, and marks any matching outbound `messages` as replied.
+
+---
+
+## Mailbox health
+
+`lib/health.ts` measures each mailbox's bounce rate and pauses mailboxes that cross a threshold.
+`instrumentation.ts` starts `startHealthMonitor()`, which runs `runHealthCheck()` every 10 minutes
+(and once at startup).
+
+**Bounce rate** = bounces / sends over the last `health_window_days`, never reaching back
+before the mailbox's `connections.healthResetAt`. Only campaign mail counts (`stepPosition > 0`).
+- Sends: `messages` with `status = 'sent'` from the mailbox, plus SMTP hard bounces.
+- SMTP hard bounces: `messages` with `status = 'failed'` and a `failedAt` in the window. The
+  scheduler sets `connectionId` and `failedAt` on a failed row only for hard bounces (550-554), so
+  transient failures never count.
+- Inbox bounces: `inbound_emails` with `isBounce = true` and `isDuplicate = false` on the mailbox's
+  `connectionId`, minus delay notices (subject containing "delay" unless it also says
+  "undeliverable", or a body with "Action: delayed" / "Delivery incomplete"; best effort, since
+  only subject and plain text are stored). These notices have no lead link, so each notice counts
+  once. With IMAP off only the SMTP-time hard bounces are visible.
+
+**Auto-pause:** an `active` mailbox with at least `health_min_sends` sends and a rate at or above
+`health_bounce_threshold` is set to `paused`, `healthPausedAt` is stamped (this is what the UI and
+MCP treat as "auto-paused"), and `lastError` gets a `Health:` reason for humans. The write is
+conditional on the mailbox still being `active` with an unchanged `healthResetAt`. Paused and
+errored mailboxes are skipped; nothing is deleted. **Auto-pause is on by default.** Turn it off
+with the switch under Settings, Mailbox health, or `set_health_settings` with `autoPause: false`;
+the rates are still computed and shown.
+
+**Resuming:** an auto-paused mailbox is resumed only with `toggleConnectionStatus` (it reads the
+stored status, not the caller's). That sets `healthResetAt = now` so the old bounces don't pause it
+again, and clears `healthPausedAt` and the `Health:` `lastError`. `testConnection` on an auto-paused
+mailbox only updates `lastTestedAt` and the DNS result.
+
+| `app_settings` key | Default |
+|---|---|
+| `health_bounce_threshold` | `5` (percent) |
+| `health_window_days` | `7` |
+| `health_min_sends` | `20` |
+| `health_auto_pause` | `true` |
+
+Thresholds are edited in **Settings** or over MCP. MCP tools: `get_mailbox_health`,
+`set_health_settings`, `run_health_check`.
 
 ---
 

@@ -192,6 +192,26 @@ const TOOL_GROUPS: { group: string; tools: ToolEntry[] }[] = [
     ],
   },
   {
+    group: 'Mailbox Health',
+    tools: [
+      {
+        name: 'get_mailbox_health',
+        description: 'Bounce rate, sends, DNS and failures per mailbox, plus thresholds',
+        params: 'connectionId?',
+      },
+      {
+        name: 'set_health_settings',
+        description: 'Update health thresholds (partial)',
+        params: 'threshold?, windowDays?, minSends?, autoPause?',
+      },
+      {
+        name: 'run_health_check',
+        description: 'Run the check now and pause mailboxes over the threshold',
+        params: '—',
+      },
+    ],
+  },
+  {
     group: 'Settings & Stats',
     tools: [
       { name: 'get_settings', description: 'Get all app settings', params: '—' },

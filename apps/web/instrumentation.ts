@@ -21,4 +21,7 @@ export async function register() {
 
   const { startInboxPoller } = await import("./lib/inbox-poller")
   startInboxPoller()
+
+  const { startHealthMonitor } = await import("./lib/health")
+  startHealthMonitor()
 }

@@ -33,6 +33,12 @@ export const connections = sqliteTable("connections", {
   imapUidValidity: integer("imap_uid_validity"),
   lastTestedAt: integer("last_tested_at", { mode: "timestamp" }),
   lastError: text("last_error"),
+  /** Mailbox health ignores sends and bounces from before this moment. Set when a
+   *  user re-activates a paused mailbox so old bounces don't immediately re-pause it. */
+  healthResetAt: integer("health_reset_at", { mode: "timestamp" }),
+  /** Set when the health check auto-paused this mailbox; cleared when the mailbox is resumed or leaves 'paused'.
+   *  lastError carries the human-readable reason but other writers overwrite it. */
+  healthPausedAt: integer("health_paused_at", { mode: "timestamp" }),
   /** SPF/DKIM/DMARC DNS check results for the fromEmail domain. Null = not checked yet. */
   dnsRecords: text("dns_records", { mode: "json" }).$type<{
     spf: boolean;
@@ -218,6 +224,9 @@ export const messages = sqliteTable(
     renderedSubject: text("rendered_subject"),
     renderedBody: text("rendered_body"),
     error: text("error"),
+    /** When the scheduler recorded a hard bounce (SMTP 550-554) for this message.
+     *  Only set for hard bounces; sentAt stays null because nothing was delivered. */
+    failedAt: integer("failed_at", { mode: "timestamp" }),
     /** Number of send attempts so far. Transient failures re-queue and
      *  increment this until it hits the retry ceiling, then the message
      *  becomes terminally 'failed'. */
